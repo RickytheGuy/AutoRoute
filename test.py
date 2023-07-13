@@ -18,9 +18,7 @@ outvdt = "C:\\Users\\lrr43\\Desktop\\Lab\\ARFS\\HobbleCreek\\vdt\\hc_fabdem.txt"
 metafile = "testVDTMETA.txt"
 outforDR = "C:\\Users\\lrr43\\Desktop\\Lab\\ARFS\\Kailey-DRlast\\FLOODMAPS\\DR_"
 
-
 mannings_dict = {0:0,111:45,113:47,112:46,114:48,115:49,116:50,121:60,123:62,122:61,124:63,125:64,126:65,20:5,30:10,90:10,100:10,60:25,40:15,50:20,70:30,80:35,200:100,255:0}
-
 
 #PrepareLU(dem,land,LU, mannings_dict)
 # "C:\\Users\\lrr43\\Desktop\\Lab\\DeSoto\\LandCover\\W100N40_PROBAV_LC100_global_v3.0.1_2019-nrt_Discrete-Classification-map_EPSG-4326.tif","testLAND.tif",normalize=True)
