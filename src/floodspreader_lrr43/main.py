@@ -8,12 +8,15 @@ import time
 try:
     import gdal
     import ogr
+    import osr
     from gdalconst import GA_ReadOnly
 except:
-	from osgeo import gdal, ogr
+	from osgeo import gdal, ogr, osr
 	from osgeo.gdalconst import GA_ReadOnly
 
 gdal.UseExceptions()
+os.environ['PROJ_LIB'] = "C:\\Users\\lrr43\\.conda\\envs\\gdal\\Library\\share\\proj"
+os.environ['GDAL_DATA'] = "C:\\Users\\lrr43\\.conda\\envs\\gdal\\Library\\share"
 
 def PrepareLU(dem_file_path: str, land_file_path: str, out_path: str, normalize=None):
     """
@@ -60,12 +63,12 @@ def PrepareLU(dem_file_path: str, land_file_path: str, out_path: str, normalize=
         return
     
     if normalize is not None:
-        dictionary = normalize
+        normalize
 
         # Reclassify
         array = _readDatasetToArray(out_path)
         u, inv = np.unique(array,return_inverse=True)
-        array = np.array([dictionary[i] for i in u])[inv].reshape(array.shape)
+        array = np.array([normalize[i] for i in u])[inv].reshape(array.shape)
 
         # Resave
         hDriver = gdal.GetDriverByName("GTiff")
@@ -73,14 +76,103 @@ def PrepareLU(dem_file_path: str, land_file_path: str, out_path: str, normalize=
         out_file.SetGeoTransform(geotransform)
         out_file.SetProjection(projection)
         out_file.GetRasterBand(1).WriteArray(array)
-        del  out_file
+        out_file = None
 
-        return dictionary 
+        return normalize 
 
-def _Get_Raster_Details(DEM_File: str):
-    gdal.Open(DEM_File, GA_ReadOnly)
-    data = gdal.Open(DEM_File)
-    projection = data.GetProjection()
+def PrepareDEM(dem, output: str, extent = None, clip = None):
+    """
+    Prepare a DEM for use in AutoRoute / FloodSpreader programs. This function will take in
+    a DEM or a directory of DEMs and will:
+        1) merge all DEMs into one file 
+        2) Clip DEM to an extent using the nearest cells
+        3) Clip DEM to a region using the nearest cells
+
+    Parameters
+    ----------
+    dem : any
+        dem is either a path to a dem, or a directory containg .tif files. 
+    extent: any, optional
+        If specified, a list or tuple in the format of (minx, miny, maxx, maxy) is expected. 
+        The DEM is clipped as close as possible to the extent
+    clip : any, optional
+        If specified, a file (.shp, .gpkg, .parquet) is expected. 
+        The DEM is clipped as close as possible to the extent of the feature
+    """
+
+    # check the inputs
+    if isinstance(dem, str):
+        assert os.path.exists(dem), "Dem file does not exist"
+    if extent is not None and clip is not None:
+        raise ValueError("Must pass either extent or clip, not both")
+    if isinstance(extent, (tuple, list)):
+        if len(extent) != 4 or extent[0] >= extent[2] or extent[1] >= extent[3]:
+            raise ValueError(f"Invlaid extent {extent}")
+
+    # if dem is one file, then load it into memory
+    if dem.endswith(".tif"):
+        tiff_files = [dem]
+    else:
+        tiff_files = [os.path.join(dem, file) for file in os.listdir(dem) if file.endswith('.tif')]
+    minx, miny, maxx, maxy, dx, dy, ncols, nrows, geoTransform, projection = _Get_Raster_Details(tiff_files[0])
+
+    # Check if the projection is EPSG:4326 (WGS84)
+    if 'EPSG:4326' not in projection:
+        # Reproject all GeoTIFFs to EPSG:4326
+        projection = osr.SpatialReference()
+        projection.ImportFromEPSG(4326)
+
+    # Create an in-memory VRT (Virtual Dataset) for merging the GeoTIFFs
+    vrt_options = gdal.BuildVRTOptions(resampleAlg='bilinear')
+    vrt_dataset = gdal.BuildVRT('', [tiff_file for tiff_file in tiff_files], options=vrt_options)
+    vrt_geo = vrt_dataset.GetGeoTransform()
+    dataset_extent = [vrt_geo[0],  # xmin
+                      vrt_geo[3] + vrt_dataset.RasterYSize * vrt_geo[5],  # ymax
+                      vrt_geo[0] + vrt_dataset.RasterXSize * vrt_geo[1],  # xmax
+                      vrt_geo[3]  # ymin
+                      ]
+    
+    if extent is not None:
+        assert (extent[0] >= dataset_extent[0] and extent[1] >= dataset_extent[1] and
+        extent[2] <= dataset_extent[2] and extent[3] <= dataset_extent[3]), "You have specified an extent that is not entirely within the dataset!!"
+
+        warp_options = gdal.WarpOptions(format='GTiff', dstSRS=projection, dstNodata=0, outputBounds=extent)
+    elif clip is not None:
+        shp = ogr.Open(clip)
+        layer = shp.GetLayer()
+        shp_extent = layer.GetExtent()
+
+        assert (shp_extent[0] >= dataset_extent[0] and shp_extent[1] >= dataset_extent[1] and
+        shp_extent[2] <= dataset_extent[2] and shp_extent[3] <= dataset_extent[3]), "You are trying to clip something that is not entirely within the dataset!!"
+
+        name = layer.GetName()
+        shp = None
+        warp_options = gdal.WarpOptions(format='GTiff', dstSRS=projection, dstNodata=0, cutlineDSName=clip, cutlineLayer=name, cropToCutline=True)
+    else:
+        warp_options = gdal.WarpOptions(format='GTiff', dstSRS=projection, dstNodata=0)
+
+    print(f'Writing {output}... ', end='')
+    gdal.Warp(output, vrt_dataset, options=warp_options)
+    print('finished')
+
+    # Clean up the VRT dataset
+    vrt_dataset = None
+
+    
+
+def _Get_Raster_Details(raster_file: str):
+    """
+    Get important information from a raster file
+    """
+    data = gdal.Open(raster_file, GA_ReadOnly)
+    try:
+        projection = data.GetProjection()
+    except RuntimeError as e:
+        print(e)
+        print("Consider adding this to the top of your python script, with your paths:")
+        print('os.environ[\'PROJ_LIB\'] = "C:\\Users\\USERNAME\\.conda\\envs\\gdal\\Library\\share\\proj \
+            os.environ[\'GDAL_DATA\'] = "C:\\Users\\USERNAME\\.conda\\envs\\gdal\\Library\\share"')
+        
     geoTransform = data.GetGeoTransform()
     ncols = int(data.RasterXSize)
     nrows = int(data.RasterYSize)
@@ -90,21 +182,16 @@ def _Get_Raster_Details(DEM_File: str):
     dy = geoTransform[5]
     maxx = minx + dx * ncols
     miny = maxy + dy * nrows
-    del data
 
     if maxx == minx or maxy == miny:
-        raise Exception(f"{DEM_File} is {maxx-minx}x{maxy-miny}, which is not supported.")
+        raise Exception(f"{raster_file} is {maxx-minx}x{maxy-miny}, which is not supported.")
 
     return minx, miny, maxx, maxy, dx, dy, ncols, nrows, geoTransform, projection
 
 def _readDatasetToArray(tif: str) -> np.ndarray:
-    Dataset = gdal.Open(tif, gdal.GA_ReadOnly)
+    Dataset = gdal.Open(tif, GA_ReadOnly)
     Band = Dataset.GetRasterBand(1)
-    Array = np.array(Band.ReadAsArray(0))
-
-    del Dataset
-
-    return Array
+    return np.array(Band.ReadAsArray(0))
 
 def PrepareStream(dem_file_path: str, shapefile: str, out_path: str, field: str ='COMID') -> None:
     """
@@ -282,25 +369,31 @@ def MakeRAPIDFile(mainfile: str, stream_raster: str, out_path: str, flows: list,
     #Now look through the Raster to find the appropriate Information and print to the FlowFile
     data = gdal.Open(stream_raster, GA_ReadOnly)
     nrows = int(data.RasterYSize)
-    
+    band = data.GetRasterBand(1)
+    data_array = band.ReadAsArray()
+
+    indices = np.where(data_array > 0)
+    rapid_df = pd.DataFrame({'ROW': indices[0], 'COL': indices[1], field: data_array[indices]})
+    rapid_df = rapid_df.merge(df, on=field, how='left')
+
+
     #Open Flow File and put Header
-    with open(out_path, 'w') as ff:
-        flows = ' '.join(flows)
-        ff.write(f'ROW COL {field} {flows}')
-        band = data.GetRasterBand(1)
-        data_array = band.ReadAsArray()
-        for r in range(nrows):
-            c=-1
-            for value in data_array[r]:
-                c=c+1
-                val_int = int(value)
-                if val_int>0:
-                    try: # This try/except filters out COMIDs that are present in the shapefile but not the COMID list
-                        index_spot = COMID_List_SHP.index(val_int)                
-                    except:
-                        continue
-                    print_str = f"{r} {c} {COMID_List_SHP[index_spot]} {' '.join([str(item) for item in Flow_List_SHP[index_spot]])}"
-                    ff.write('\n' + print_str)
+    # with open(out_path, 'w') as ff:
+    #     flows = ' '.join(flows)
+    #     ff.write(f'ROW COL {field} {flows}')
+
+    #     for r in range(nrows):
+    #         c=-1
+    #         for value in data_array[r]:
+    #             c=c+1
+    #             val_int = int(value)
+    #             if val_int>0:
+    #                 try: # This try/except filters out COMIDs that are present in the shapefile but not the COMID list
+    #                     index_spot = COMID_List_SHP.index(val_int)                
+    #                 except:
+    #                     continue
+    #                 print_str = f"{r} {c} {COMID_List_SHP[index_spot]} {' '.join([str(item) for item in Flow_List_SHP[index_spot]])}"
+    #                 ff.write('\n' + print_str)
     data = None
 
 def AutoRoute(EXE: str, DEM: str, stream: str, RAPID: str, LandUseSameRes: str, out_path: str, Mannings: str, RAPIDflow: str, 
