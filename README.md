@@ -1,7 +1,12 @@
 # FloodSpreader and AutoRoute
 
-This is a test package. You can use
-[Github-flavored Markdown](https://guides.github.com/features/mastering-markdown/)
-to write your content.
+## About
+A python package under developement that offers a suite of tools for preprocessing datasets and running AutoRoute, a program developed by Mike Follum. For info about AutoRoute and FloodSpreader, see [here](https://hdl.handle.net/11681/38783). 
+
+## Documentation
+TBA
+
+### Authors / Contributers
+Louis Rosas
 
 Do not distribute this package without permission from Brigham Young Universities Hydroinformatics lab.
