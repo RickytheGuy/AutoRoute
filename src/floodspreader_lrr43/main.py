@@ -18,23 +18,19 @@ gdal.UseExceptions()
 os.environ['PROJ_LIB'] = "C:\\Users\\lrr43\\.conda\\envs\\gdal\\Library\\share\\proj"
 os.environ['GDAL_DATA'] = "C:\\Users\\lrr43\\.conda\\envs\\gdal\\Library\\share"
 
-def PrepareLU(dem_file_path: str, land_file_path: str, out_path: str, normalize=None):
+def PrepareLU(dem_file_path: str, land_file_path: str, out_path: str, normalize: dict = None):
     """
-    Make a Land Cover raster that is the same size and resolution as the DEM file
-
-    Returns nothing, but creates the LU file.*
-
-    *Unless normalize is set to true, in which case it returns a dictionary of the new values
+    Make a Land Cover raster that is the same size and resolution as the DEM file from one or more landcover files.
 
     Parameters
     ----------
-    dem_file_path : string, os.path object
+    dem_file_path : string
         Path to DEM file
-    land_file_path : string, os.path object
-        Path to Land file
-    out_path : string, os.path object
+    land_file_path : string
+        Path to land file or path to a folder containg land cover files
+    out_path : string
         Path, including name and file extension, of the output
-    normalize : nonetype, dict, optional
+    normalize : dict, optional
        If a dictionary is passed in the raster is reclassified according to the input dictionary
 
         .. versionadded:: 0.1.0
@@ -55,30 +51,48 @@ def PrepareLU(dem_file_path: str, land_file_path: str, out_path: str, normalize=
 
     (minx, miny, maxx, maxy, _, _, ncols, nrows, geotransform, projection) = _Get_Raster_Details(dem_file_path)
 
-    try:
-        options = gdal.WarpOptions(outputType=gdal.GDT_UInt32, width=ncols, height=nrows, outputBounds=(minx, miny, maxx, maxy))
-        gdal.Warp(out_path, land_file_path,options=options) 
-    except Exception as e:
-        print(e)
-        return
-    
-    if normalize is not None:
-        normalize
+    # if landcover is one file, then load it into memory
+    if land_file_path.endswith(".tif"):
+        tiff_files = [land_file_path]
+    else:
+        tiff_files = [os.path.join(land_file_path, file) for file in os.listdir(land_file_path) if file.endswith('.tif')]
 
-        # Reclassify
-        array = _readDatasetToArray(out_path)
-        u, inv = np.unique(array,return_inverse=True)
-        array = np.array([normalize[i] for i in u])[inv].reshape(array.shape)
+    # Check if the projection is EPSG:4326 (WGS84)
+    if '["EPSG","4326"]' not in projection:
+        # Reproject all GeoTIFFs to EPSG:4326
+        projection = osr.SpatialReference()
+        projection.ImportFromEPSG(4326)
 
-        # Resave
-        hDriver = gdal.GetDriverByName("GTiff")
-        out_file = hDriver.Create(out_path, xsize=ncols, ysize=nrows, bands=1, eType=gdal.GDT_UInt16)
-        out_file.SetGeoTransform(geotransform)
-        out_file.SetProjection(projection)
-        out_file.GetRasterBand(1).WriteArray(array)
-        out_file = None
+    # Create an in-memory VRT (Virtual Dataset) for merging the GeoTIFFs
+    vrt_options = gdal.BuildVRTOptions(resampleAlg='nearest')
+    vrt_dataset = gdal.BuildVRT('', [tiff_file for tiff_file in tiff_files], options=vrt_options)
+    options = gdal.WarpOptions(outputType=gdal.GDT_UInt16, width=ncols, height=nrows, outputBounds=(minx, miny, maxx, maxy), 
+                                dstSRS=projection, resampleAlg=gdal.GRA_NearestNeighbour, format='VRT')
+    final_dataset = gdal.Warp('', vrt_dataset, options=options) 
 
-        return normalize 
+    hDriver = gdal.GetDriverByName("GTiff")
+    out_file = hDriver.Create(out_path, xsize=ncols, ysize=nrows, bands=1, eType=gdal.GDT_UInt16)
+    out_file.SetGeoTransform(final_dataset.GetGeoTransform())
+    out_file.SetProjection(projection)
+
+    print("Writing out array... ", end='')
+    block_size = 8192
+    # Process the array in blocks
+    for y in range(0, nrows, block_size):
+        for x in range(0, ncols, block_size):
+            actual_block_size_x = min(block_size, ncols - x)
+            actual_block_size_y = min(block_size, nrows - y)
+            # Read the block of data
+            block = final_dataset.ReadAsArray(x, y, actual_block_size_x, actual_block_size_y)
+
+            # Perform reclassification operation on the block
+            if normalize is not None:
+                out_file.GetRasterBand(1).WriteArray(np.vectorize(normalize.get)(block), x, y)
+            else:
+                out_file.GetRasterBand(1).WriteArray(block, x, y)
+    print('finished')
+    out_file = None
+    final_dataset = None
 
 def PrepareDEM(dem, output: str, extent = None, clip = None):
     """
@@ -133,8 +147,8 @@ def PrepareDEM(dem, output: str, extent = None, clip = None):
                       ]
     
     if extent is not None:
-        assert (extent[0] >= dataset_extent[0] and extent[1] >= dataset_extent[1] and
-        extent[2] <= dataset_extent[2] and extent[3] <= dataset_extent[3]), "You have specified an extent that is not entirely within the dataset!!"
+        assert (extent[0] > dataset_extent[0] and extent[1] > dataset_extent[1] and
+        extent[2] < dataset_extent[2] and extent[3] < dataset_extent[3]), f"You have specified an extent that is not entirely within the dataset!!\n{dataset_extent}"
 
         warp_options = gdal.WarpOptions(format='GTiff', dstSRS=projection, dstNodata=0, outputBounds=extent)
     elif clip is not None:
@@ -142,8 +156,8 @@ def PrepareDEM(dem, output: str, extent = None, clip = None):
         layer = shp.GetLayer()
         shp_extent = layer.GetExtent()
 
-        assert (shp_extent[0] >= dataset_extent[0] and shp_extent[1] >= dataset_extent[1] and
-        shp_extent[2] <= dataset_extent[2] and shp_extent[3] <= dataset_extent[3]), "You are trying to clip something that is not entirely within the dataset!!"
+        assert (shp_extent[0] > dataset_extent[0] and shp_extent[1] > dataset_extent[1] and
+        shp_extent[2] < dataset_extent[2] and shp_extent[3] < dataset_extent[3]), "You are trying to clip something that is not entirely within the dataset!!"
 
         name = layer.GetName()
         shp = None
@@ -310,7 +324,7 @@ def MakeRAPIDFile(mainfile: str, stream_raster: str, out_path: str, flows: str o
         if len(files) > 1:
             print(f"WARNING: multiple files found, using {files[0]}")
         stream_raster = os.path.join(stream_raster, files[0])
-        
+
     # If a shapefile/gpkg
     if mainfile.endswith(('.shp', '.gpkg')) and os.path.isfile(mainfile):
         if flows == None:
