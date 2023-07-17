@@ -72,7 +72,7 @@ def PrepareLU(dem_file_path: str, land_file_path: str, out_path: str, normalize=
 
         # Resave
         hDriver = gdal.GetDriverByName("GTiff")
-        out_file = hDriver.Create(out_path, xsize=ncols, ysize=nrows, bands=1, eType=gdal.GDT_UInt32)
+        out_file = hDriver.Create(out_path, xsize=ncols, ysize=nrows, bands=1, eType=gdal.GDT_UInt16)
         out_file.SetGeoTransform(geotransform)
         out_file.SetProjection(projection)
         out_file.GetRasterBand(1).WriteArray(array)
@@ -157,8 +157,6 @@ def PrepareDEM(dem, output: str, extent = None, clip = None):
 
     # Clean up the VRT dataset
     vrt_dataset = None
-
-    
 
 def _Get_Raster_Details(raster_file: str):
     """
@@ -247,7 +245,7 @@ def _returnBasename(path: str) -> str:
     head, tail = os.path.split(path)
     return tail or os.path.basename(head)
 
-def MakeRAPIDFile(mainfile: str, stream_raster: str, out_path: str, flows: list, field: str='COMID') -> None:
+def MakeRAPIDFile(mainfile: str, stream_raster: str, out_path: str, flows: str or list = None, field: str='LINKNO') -> None:
     """
     Make a RAPID flow file from a shapefile or from a csv of COMID-max flow pairs, as seen in the Notes section.
 
@@ -258,11 +256,12 @@ def MakeRAPIDFile(mainfile: str, stream_raster: str, out_path: str, flows: list,
     mainfile : string, os.path object
         Either a stream shapefile or a csv of flow pairs. It's type will be automatically detected and proccessed accordingly.
     stream_raster : string, os.path object
-        Stream raster to read from
+        Stream raster to read from. If folder, then it will search for the first .tif
     out_path : string, os.path object
         Out path to stream shapefile
-    flows : list
-        List of flows (strings) to be considered 
+    flows : str, list
+        List of flows or one flow as a string to be considered (present in the mainfile). If none and the input file is a csv-like input,
+        then the flows are assumed to be the other columns
     field : string, optional
         The label of the field containg the unique stream identifiers, usually COMID or HydroID
 
@@ -275,7 +274,7 @@ def MakeRAPIDFile(mainfile: str, stream_raster: str, out_path: str, flows: list,
 
     Notes
     -----
-    We automatically assume that the field is 'COMID' unless otherwise stated.
+    We automatically assume that the field is 'LINKNO' unless otherwise stated.
 
     An example of an input csv, with two lines of information after the header, is as follows:
 
@@ -300,22 +299,28 @@ def MakeRAPIDFile(mainfile: str, stream_raster: str, out_path: str, flows: list,
 
     """
     _checkExistence([mainfile, stream_raster])  
+    if isinstance(flows, str):
+        flows = [flows]
 
-    # Gets the Minimum and MAximum COMID Values within the Stream Raster
-    data = gdal.Open(stream_raster, GA_ReadOnly)   
-    srcband = data.GetRasterBand(1)    
-    stats = srcband.GetStatistics(False, True)
-    data = None
-    (MinC, MaxC) = (int(stats[0]), int(stats[1]))
-
+    if os.path.isdir(stream_raster):
+        files = os.listdir(stream_raster)
+        files = [f for f in files if f.endswith('.tif')]
+        if files == []:
+            raise ValueError(f"Couldn't find any .tif files in {stream_raster}")
+        if len(files) > 1:
+            print(f"WARNING: multiple files found, using {files[0]}")
+        stream_raster = os.path.join(stream_raster, files[0])
+        
     # If a shapefile/gpkg
-    if (os.path.splitext(mainfile)[-1].lower() == '.shp' or os.path.splitext(mainfile)[-1].lower() == '.gpkg' )and os.path.isfile(mainfile):
-        COMID_List_SHP = []
-        Flow_List_SHP = []
-        if os.path.splitext(mainfile)[-1].lower() == '.shp':
+    if mainfile.endswith(('.shp', '.gpkg')) and os.path.isfile(mainfile):
+        if flows == None:
+            raise ValueError('Must specify "flows" when using .shp or .gpkg inputs')
+        
+        if mainfile.endswith('.shp'):
             driver = ogr.GetDriverByName("ESRI Shapefile")
         else:
             driver = ogr.GetDriverByName("GPKG")
+
         dataSource = driver.Open(mainfile, 0)
         layer = dataSource.GetLayer()
         layerDefinition = layer.GetLayerDefn()
@@ -328,72 +333,59 @@ def MakeRAPIDFile(mainfile: str, stream_raster: str, out_path: str, flows: list,
         # Make sure flows and field are in the shapefile
         check = all(item in layer_list for item in flows)
         if (check is False):
-            raise Exception("One of the flows fields is not in the shapefile")
+            raise ValueError("One of the flows fields is not in the shapefile")
         if (not field in layer_list):
-            raise Exception("The field %s is not in the shapefile" % field)
-         
+            raise ValueError("The field %s is not in the shapefile" % field)
+        
+        # Make a dataframe to store the flows with the ids
+        ids = []
+        flow_list = []
         for feature in layer:
-            feat = feature.GetField(field)  
-            feat_COMID = int(feat)
-            if(feat_COMID>=MinC and feat_COMID<=MaxC):
-                COMID_List_SHP.append(feat_COMID)
-                f=-1
-                for flowconsidered in flows:
-                    f=f+1
-                    feat_flow = feature.GetField(flowconsidered)
-                    if f==0:
-                        flowreturn = str(feat_flow)
-                        if flowreturn == "None" or flowreturn == "":
-                            flowreturn = '0'
-                    elif str(feat_flow) == 'None' or str(feat_flow) == '':
-                        flowreturn = flowreturn + ' 0'
-                    else:
-                        flowreturn += f" {feat_flow}"
-                        
-                Flow_List_SHP.append(flowreturn)
+            ids.append(feature.GetField(field))
+            flow_list.append([feature.GetField(flow) for flow in flows])
+
+        flow_list = np.array(flow_list)
+        df = pd.DataFrame({field:ids})
+        for i, flow in enumerate(flows):
+            df[flow] = flow_list[:,i]
+            df[flow] = df[flow].astype(float)
+        
+        dataSource = None
 
     # If a .txt or .csv
-    elif ((os.path.splitext(mainfile)[-1].lower() == '.csv' or os.path.splitext(mainfile)[-1].lower() == '.txt')) and os.path.isfile(mainfile): 
-        df = pd.read_csv(mainfile, sep=',')
-        df = df.drop_duplicates(field)
-        df = df.dropna()
-        COMID_List_SHP = df[field].values.tolist()
-        check = all(item in list(df) for item in flows)
-        if (check is False):
-            raise Exception("One of the flows fields is not in the file")
-
-        Flow_List_SHP = df[flows].values.tolist()
+    elif mainfile.endswith(('.csv', '.txt')) and os.path.isfile(mainfile): 
+        df = (
+            pd.read_csv(mainfile, sep=',')
+            .drop_duplicates(field)
+            .dropna()
+        )
+        
+        if flows != None:
+            check = all(item in list(df) for item in flows)
+            if (check is False):
+                raise ValueError(f"One of the flows fields is not in the file\nflows entered: {flows}, columns found: {list(df)}")
+            df = df[[field] + flows]
     else:
-        raise Exception(f"The mainfile has the extension of {os.path.splitext(mainfile)[-1].lower()}, which is not recognized. Please use a .shp, .txt, or .csv file")
+        raise IOError(f"The mainfile has the extension of {os.path.splitext(mainfile)[-1]}, which is not recognized. Please use a .shp, .txt, or .csv file")
             
     #Now look through the Raster to find the appropriate Information and print to the FlowFile
     data = gdal.Open(stream_raster, GA_ReadOnly)
-    nrows = int(data.RasterYSize)
     band = data.GetRasterBand(1)
     data_array = band.ReadAsArray()
 
     indices = np.where(data_array > 0)
-    rapid_df = pd.DataFrame({'ROW': indices[0], 'COL': indices[1], field: data_array[indices]})
-    rapid_df = rapid_df.merge(df, on=field, how='left')
+    matches = df[df[field].isin(data_array[indices])].shape[0]
 
+    if matches != df.shape[0]:
+        print(f"WARNING: {matches} ids out of {df.shape[0]} from your input file are present in the stream raster...")
+    
+    (
+        pd.DataFrame({'ROW': indices[0], 'COL': indices[1], field: data_array[indices]})
+        .merge(df, on=field, how='left')
+        .fillna(0)
+        .to_csv(out_path, sep=" ", index=False)
+    )
 
-    #Open Flow File and put Header
-    # with open(out_path, 'w') as ff:
-    #     flows = ' '.join(flows)
-    #     ff.write(f'ROW COL {field} {flows}')
-
-    #     for r in range(nrows):
-    #         c=-1
-    #         for value in data_array[r]:
-    #             c=c+1
-    #             val_int = int(value)
-    #             if val_int>0:
-    #                 try: # This try/except filters out COMIDs that are present in the shapefile but not the COMID list
-    #                     index_spot = COMID_List_SHP.index(val_int)                
-    #                 except:
-    #                     continue
-    #                 print_str = f"{r} {c} {COMID_List_SHP[index_spot]} {' '.join([str(item) for item in Flow_List_SHP[index_spot]])}"
-    #                 ff.write('\n' + print_str)
     data = None
 
 def AutoRoute(EXE: str, DEM: str, stream: str, RAPID: str, LandUseSameRes: str, out_path: str, Mannings: str, RAPIDflow: str, 
@@ -867,7 +859,7 @@ def FloodSpreader(EXE: str, DEM: str, VDT: str, OutName: str, Database: bool = T
         mode = 'w'
 
     with open(MIFN, mode) as MIF:
-        #Required inputs
+        # Required inputs
         _AR_Write(MIF, "#FloodSpreader_Inputs", "")
         _AR_Write(MIF, 'DEM_File', DEM)
         if Database:
@@ -878,7 +870,7 @@ def FloodSpreader(EXE: str, DEM: str, VDT: str, OutName: str, Database: bool = T
 
         _AR_Write(MIF, '', '')
 
-        #   Optional inputs
+        # Optional inputs
         _AR_Write(MIF, 'FS_ADJUST_FLOW_BY_FRACTION', AdjustFlow)
         if ARBathy:
             _AR_Write(MIF, 'BATHY_Out_File', ARBathy)
