@@ -1,5 +1,6 @@
 import os
 import subprocess
+import re
 import numpy as np
 import pandas as pd
 from datetime import datetime
@@ -18,7 +19,7 @@ gdal.UseExceptions()
 os.environ['PROJ_LIB'] = "C:\\Users\\lrr43\\.conda\\envs\\gdal\\Library\\share\\proj"
 os.environ['GDAL_DATA'] = "C:\\Users\\lrr43\\.conda\\envs\\gdal\\Library\\share"
 
-def PrepareLU(dem_file_path: str, land_file_path: str, out_path: str, normalize: dict = None):
+def PrepareLU(dem_file_path: str, land_file_path: str or list, out_path: str, normalize: dict = None):
     """
     Make a Land Cover raster that is the same size and resolution as the DEM file from one or more landcover files.
 
@@ -28,8 +29,8 @@ def PrepareLU(dem_file_path: str, land_file_path: str, out_path: str, normalize:
         Path to DEM file
     land_file_path : string
         Path to land file or path to a folder containg land cover files
-    out_path : string
-        Path, including name and file extension, of the output
+    out_path : string, list
+        Path, including name and file extension, of the output, or a list of such
     normalize : dict, optional
        If a dictionary is passed in the raster is reclassified according to the input dictionary
 
@@ -47,15 +48,19 @@ def PrepareLU(dem_file_path: str, land_file_path: str, out_path: str, normalize:
     --------
 
     """
-    _checkExistence([dem_file_path, land_file_path])
+    _checkExistence([dem_file_path])
 
-    (minx, miny, maxx, maxy, _, _, ncols, nrows, geotransform, projection) = _Get_Raster_Details(dem_file_path)
+    (minx, miny, maxx, maxy, _, _, ncols, nrows, _, projection) = _Get_Raster_Details(dem_file_path)
 
-    # if landcover is one file, then load it into memory
-    if land_file_path.endswith(".tif"):
-        tiff_files = [land_file_path]
+    if isinstance(land_file_path, (list, tuple)):
+        tiff_files = land_file_path
+    elif isinstance(land_file_path, str):
+        if land_file_path.endswith(".tif"):
+            tiff_files = [land_file_path]
+        else:
+            tiff_files = [os.path.join(land_file_path, file) for file in os.listdir(land_file_path) if file.endswith('.tif')]
     else:
-        tiff_files = [os.path.join(land_file_path, file) for file in os.listdir(land_file_path) if file.endswith('.tif')]
+        raise ValueError(f"I dont't know what to do with land file path of type {type(land_file_path)}")
 
     # Check if the projection is EPSG:4326 (WGS84)
     if '["EPSG","4326"]' not in projection:
@@ -82,6 +87,7 @@ def PrepareLU(dem_file_path: str, land_file_path: str, out_path: str, normalize:
         for x in range(0, ncols, block_size):
             actual_block_size_x = min(block_size, ncols - x)
             actual_block_size_y = min(block_size, nrows - y)
+
             # Read the block of data
             block = final_dataset.ReadAsArray(x, y, actual_block_size_x, actual_block_size_y)
 
@@ -90,22 +96,22 @@ def PrepareLU(dem_file_path: str, land_file_path: str, out_path: str, normalize:
                 out_file.GetRasterBand(1).WriteArray(np.vectorize(normalize.get)(block), x, y)
             else:
                 out_file.GetRasterBand(1).WriteArray(block, x, y)
+
     print('finished')
     out_file = None
     final_dataset = None
 
 def PrepareDEM(dem, output: str, extent = None, clip = None):
     """
-    Prepare a DEM for use in AutoRoute / FloodSpreader programs. This function will take in
-    a DEM or a directory of DEMs and will:
-        1) merge all DEMs into one file 
+    Prepare a DEM for use in AutoRoute / FloodSpreader programs. This function will:
+        1) merge all DEMs into one file (if applicable)
         2) Clip DEM to an extent using the nearest cells
         3) Clip DEM to a region using the nearest cells
 
     Parameters
     ----------
     dem : any
-        dem is either a path to a dem, or a directory containg .tif files. 
+        dem is either a path to a dem, a list of paths, or a directory containg .tif files. 
     extent: any, optional
         If specified, a list or tuple in the format of (minx, miny, maxx, maxy) is expected. 
         The DEM is clipped as close as possible to the extent
@@ -124,7 +130,9 @@ def PrepareDEM(dem, output: str, extent = None, clip = None):
             raise ValueError(f"Invlaid extent {extent}")
 
     # if dem is one file, then load it into memory
-    if dem.endswith(".tif"):
+    if isinstance(dem, (list, tuple)):
+        tiff_files = dem
+    elif dem.endswith(".tif"):
         tiff_files = [dem]
     else:
         tiff_files = [os.path.join(dem, file) for file in os.listdir(dem) if file.endswith('.tif')]
@@ -141,14 +149,24 @@ def PrepareDEM(dem, output: str, extent = None, clip = None):
     vrt_dataset = gdal.BuildVRT('', [tiff_file for tiff_file in tiff_files], options=vrt_options)
     vrt_geo = vrt_dataset.GetGeoTransform()
     dataset_extent = [vrt_geo[0],  # xmin
-                      vrt_geo[3] + vrt_dataset.RasterYSize * vrt_geo[5],  # ymax
+                      vrt_geo[3] + vrt_dataset.RasterYSize * vrt_geo[5],  # ymin
                       vrt_geo[0] + vrt_dataset.RasterXSize * vrt_geo[1],  # xmax
-                      vrt_geo[3]  # ymin
+                      vrt_geo[3]  # ymax
                       ]
     
     if extent is not None:
-        assert (extent[0] > dataset_extent[0] and extent[1] > dataset_extent[1] and
-        extent[2] < dataset_extent[2] and extent[3] < dataset_extent[3]), f"You have specified an extent that is not entirely within the dataset!!\n{dataset_extent}"
+        # assert (extent[0] > dataset_extent[0] and extent[1] > dataset_extent[1] and
+        # extent[2] < dataset_extent[2] and extent[3] < dataset_extent[3]), f"You have specified an extent that is not entirely within the dataset!!\n{dataset_extent}"
+
+        # This is done so that we don't haver large arrays with lots of no value data. Extent is trimmed to the size of the dataset
+        extent = list(extent)
+        i = 0
+        for e1, e2 in zip(extent, dataset_extent):
+            if i < 2 and e1 < e2:
+                extent[i] = e2
+            elif e1 > e2:
+                extent[i] = e2
+            i += 1
 
         warp_options = gdal.WarpOptions(format='GTiff', dstSRS=projection, dstNodata=0, outputBounds=extent)
     elif clip is not None:
@@ -156,8 +174,8 @@ def PrepareDEM(dem, output: str, extent = None, clip = None):
         layer = shp.GetLayer()
         shp_extent = layer.GetExtent()
 
-        assert (shp_extent[0] > dataset_extent[0] and shp_extent[1] > dataset_extent[1] and
-        shp_extent[2] < dataset_extent[2] and shp_extent[3] < dataset_extent[3]), "You are trying to clip something that is not entirely within the dataset!!"
+        # assert (shp_extent[0] > dataset_extent[0] and shp_extent[1] > dataset_extent[1] and
+        # shp_extent[2] < dataset_extent[2] and shp_extent[3] < dataset_extent[3]), "You are trying to clip something that is not entirely within the dataset!!"
 
         name = layer.GetName()
         shp = None
@@ -166,12 +184,81 @@ def PrepareDEM(dem, output: str, extent = None, clip = None):
         warp_options = gdal.WarpOptions(format='GTiff', dstSRS=projection, dstNodata=0)
 
     print(f'Writing {output}... ', end='')
-    gdal.Warp(output, vrt_dataset, options=warp_options)
+    try:
+        gdal.Warp(output, vrt_dataset, options=warp_options)
+    except RuntimeError as e:
+        disk, required = re.findall(r"(\d+)", str(e))
+        raise MemoryError(f"Need {_sizeof_fmt(int(required))}; {_sizeof_fmt(int(disk))} of space on this machine")
+
     print('finished')
 
     # Clean up the VRT dataset
     vrt_dataset = None
 
+def DEM_Parser(folder: str, output: str, extent: tuple or list = None, clip: str = None,pattern: str = r"(\w\d{2})(\w\d{3})-(\w\d{2})(\w\d{3}).+", 
+               file_pattern = r"(\w\d{2})(\w\d{3}).+"):
+    """
+    Takes in a path to a folder of folders containing DEMs. By default we match the FABDEM naming 
+    convention for the pattern but others can be used. Extent is giving in the format of (minx, miny, maxx, maxy)
+    """
+    # some checks
+    if clip is None and extent is None:
+        raise NotImplementedError
+    if extent is not None and len(extent) != 4:
+        raise ValueError(f'Invalid extent: {extent}')
+    if clip is not None:
+        if not os.path.exists(clip):
+            raise ValueError(f'Clip does not exist: {clip}')
+        shp = ogr.Open(clip)
+        layer = shp.GetLayer()
+        extent = layer.GetExtent()
+
+    sub_folders = [os.path.join(folder, f) for f in os.listdir(folder) if os.path.isdir(os.path.join(folder,f))]
+    folders_to_inspect = []
+    for folder in sub_folders:
+        folder_extent = [int(x[1:]) if x[0] in 'NE' else -int(x[1:]) for x in re.findall(pattern, folder)[0]]
+        minx1, miny1, maxx1, maxy1 = extent
+        miny2, minx2, maxy2, maxx2 = folder_extent
+        if (minx1 <= maxx2 and maxx1 >= minx2 and miny1 <= maxy2 and maxy1 >= miny2):
+            folders_to_inspect.append(folder)
+
+    files = []
+    for folder in folders_to_inspect:
+        for file in os.listdir(folder):
+            file_extent = [int(x[1:]) if x[0] in 'NE' else -int(x[1:]) for x in re.findall(file_pattern, file)[0]]
+            file_extent.reverse()
+            file_extent += [file_extent[0] + 1, file_extent[1] + 1]
+            minx1, miny1, maxx1, maxy1 = extent
+            minx2, miny2, maxx2, maxy2 = file_extent
+            if (minx1 <= maxx2 and maxx1 >= minx2 and miny1 <= maxy2 and maxy1 >= miny2):
+                files.append(os.path.join(folder,file))
+
+    if len(files) == 0:
+        raise ValueError("No files found that are in the extent. Check the extent, filenames, and the patterns!")
+    elif len(files) == 1:
+        return files[0]
+    elif clip == None:
+        PrepareDEM(files, output, extent)
+    else:
+        PrepareDEM(files, output, clip=clip)
+        return output
+
+def LU_Parser(folder: str, dem: str, output: str, pattern: str = r"(\w\d{3})(\w\d{2}).+\.tif"):
+    minx1, miny1, maxx1, maxy1, _, _, ncols, nrows, _, projection = _Get_Raster_Details(dem)
+    files = []
+
+    for file in os.listdir(folder):
+        file_extent = [int(x[1:]) if x[0] in 'NE' else -int(x[1:]) for x in re.findall(pattern, file)[0]]
+        file_extent[1] -= 20
+        file_extent += [file_extent[0]+20, file_extent[1]+20]
+        minx2, miny2, maxx2, maxy2 = file_extent
+        if (minx1 <= maxx2 and maxx1 >= minx2 and miny1 <= maxy2 and maxy1 >= miny2):
+            files.append(os.path.join(folder,file))
+
+    if len(files) == 0:
+        raise ValueError("No files found that are in the extent. Check the extent, filenames, and the patterns!")
+    PrepareLU(dem,files,output)
+    
 def _Get_Raster_Details(raster_file: str):
     """
     Get important information from a raster file
@@ -214,7 +301,7 @@ def PrepareStream(dem_file_path: str, shapefile: str, out_path: str, field: str 
     Parameters
     ----------
     dem_file_path : string, os.path object
-        Path to DEM file
+        Path to DEM file, or a folder containing a DEM file
     shapefile : string, os.path object
         Path to stream shapefile
     out_path : string, os.path object
@@ -241,11 +328,10 @@ def PrepareStream(dem_file_path: str, shapefile: str, out_path: str, field: str 
     _checkExistence([dem_file_path, shapefile])
 
     (minx, miny, maxx, maxy, _, _, ncols, nrows, _, _) = _Get_Raster_Details(dem_file_path)
-    LayerName = _returnBasename(shapefile)[:-4]
-    if LayerName[-1] == '.':
-        LayerName = LayerName[:-1]
+    LayerName = os.path.basename(shapefile).split('.')[-2]
 
-    options = gdal.RasterizeOptions(noData=0, outputType=gdal.GDT_UInt32, attribute=field, width=ncols, height=nrows, outputBounds=(minx, miny, maxx, maxy), layers=LayerName)
+    options = gdal.RasterizeOptions(noData=0, outputType=gdal.GDT_UInt32, attribute=field, width=ncols, height=nrows, 
+                                    outputBounds=(minx, miny, maxx, maxy), layers=LayerName)
     gdal.Rasterize(out_path, shapefile, options=options)
 
 def _checkExistence(paths_to_check: list) -> None:
@@ -258,6 +344,13 @@ def _returnBasename(path: str) -> str:
     # See: https://stackoverflow.com/questions/8384737/extract-file-name-from-path-no-matter-what-the-os-path-format
     head, tail = os.path.split(path)
     return tail or os.path.basename(head)
+
+def _sizeof_fmt(num):
+    for unit in ("B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB"):
+        if abs(num) < 1024.0:
+            return f"{num:3.1f} {unit}"
+        num /= 1024.0
+    return f"{num:.1f} YB"
 
 def MakeRAPIDFile(mainfile: str, stream_raster: str, out_path: str, flows: str or list = None, field: str='LINKNO') -> None:
     """
@@ -755,8 +848,6 @@ def AutoRoute(EXE: str, DEM: str, stream: str, RAPID: str, LandUseSameRes: str, 
         else:
             c = subprocess.call([EXE, MIFN])
 
-        
-
 def _AR_Write(MIF, Card, Argument) -> None:
     MIF.write(f"{Card}\t{Argument}\n")
 
@@ -791,7 +882,7 @@ def FloodSpreader(EXE: str, DEM: str, VDT: str, OutName: str, Database: bool = T
     ARBathy : string, optional
         The full path to the AutoRoute-generated bathymetry.  All cells that were not included in cross-sections have a value of 0.  The main purpose of this file is as an input into FloodSpreader to create a more complete bathymetric map.
     FSBathy : string, optional
-        The full path to the FloodSpreader-generated bathymetry.  As you can see, the bathymetry is burned into the original DEM data.
+        The full path to the FloodSpreader-generated bathymetry.  The bathymetry is burned into the original DEM data.
     Linear_Interp_Bathy: bool, optional
         FloodSpreader has the option to use a simple linear interpolation to fill bathymetry estimates between cross-sections.  
     Inverse_Bathy: float, optional
