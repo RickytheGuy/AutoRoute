@@ -1,5 +1,4 @@
-from src.floodspreader_lrr43.main import *
-import os
+from AutoRoute import *
 import time
 starttime = time.time()
 exe = "C:\\Users\\lrr43\\Desktop\\Lab\\ARFS\\exes\\AutoRoute_w_GDAL.exe"

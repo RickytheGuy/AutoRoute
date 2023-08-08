@@ -1,0 +1,34 @@
+name: Test All Functions
+
+on:
+  [push, pull_request, workflow_dispatch]
+
+jobs:
+  test:
+    name: Test New Code Outputs vs Old Outputs
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash -l {0} # For conda envs: https://github.com/marketplace/actions/setup-miniconda#important
+
+    steps:
+    - name: Check Out Code
+      uses: actions/checkout@v3
+
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v2
+      with:
+        python-version: 3.11
+
+    - name: Create environment with mamba
+      uses: conda-incubator/setup-miniconda@v2
+      with:
+        mamba-version: "*"
+        channels: conda-forge,defaults
+        auto-activate-base: false
+        activate-environment: inflows
+        environment-file: envs/environment.yml
+
+    - name: Run Tests
+      run: |
+        python ./tests/test_funcs.py
