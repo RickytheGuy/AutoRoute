@@ -3,6 +3,7 @@ import subprocess
 import re
 import numpy as np
 import pandas as pd
+import concurrent.futures
 from datetime import datetime
 import time
 
@@ -18,6 +19,33 @@ except:
 gdal.UseExceptions()
 os.environ['PROJ_LIB'] = "C:\\Users\\lrr43\\.conda\\envs\\gdal\\Library\\share\\proj"
 os.environ['GDAL_DATA'] = "C:\\Users\\lrr43\\.conda\\envs\\gdal\\Library\\share"
+
+def Preprocess(dem_folder: str, lu_folder: str, streams: str, flowfile_to_sim: str, temp_folder: str, 
+               extent: tuple or list = None, clip: str = None, reach_id: str = 'LINKNO', 
+               flows_to_use: str or list = None, reclassify_dict: dict = None, overwrite: bool = False):
+    """
+    Main function that will preprocess everything
+    """
+
+    out_dem = os.path.join(temp_folder,'dem.tif')
+    os.makedirs(out_dem, exist_ok=True)
+    out_lu = os.path.join(temp_folder, 'lu.tif')
+    os.makedirs(out_lu, exist_ok=True)
+    out_strm = os.path.join(temp_folder, 'strm.tif')
+    os.makedirs(out_strm, exist_ok=True)
+    out_rapid = os.path.join(temp_folder, 'rapid.txt')
+    os.makedirs(out_rapid, exist_ok=True)
+
+    DEM_Parser(dem_folder, out_dem, extent, clip)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        # Submit the functions to the executor
+        future1 = executor.submit(LU_Parser, lu_folder, out_dem, out_lu, reclassify_dict)
+        future2 = executor.submit(PrepareStream, out_dem, streams, out_strm, reach_id)
+        
+        concurrent.futures.wait([future2], return_when=concurrent.futures.FIRST_COMPLETED)
+
+        MakeRAPIDFile(flowfile_to_sim, out_strm,out_rapid,flows_to_use,reach_id)
 
 def PrepareLU(dem_file_path: str, land_file_path: str or list, out_path: str, normalize: dict = None):
     """
@@ -195,7 +223,8 @@ def PrepareDEM(dem, output: str, extent = None, clip = None):
     # Clean up the VRT dataset
     vrt_dataset = None
 
-def DEM_Parser(folder: str, output: str, extent: tuple or list = None, clip: str = None,pattern: str = r"(\w\d{2})(\w\d{3})-(\w\d{2})(\w\d{3}).+", 
+def DEM_Parser(folder: str, output: str, extent: tuple or list = None, clip: str = None,
+               pattern: str = r"(\w\d{2})(\w\d{3})-(\w\d{2})(\w\d{3}).+", 
                file_pattern = r"(\w\d{2})(\w\d{3}).+"):
     """
     Takes in a path to a folder of folders containing DEMs. By default we match the FABDEM naming 
@@ -243,7 +272,8 @@ def DEM_Parser(folder: str, output: str, extent: tuple or list = None, clip: str
         PrepareDEM(files, output, clip=clip)
         return output
 
-def LU_Parser(folder: str, dem: str, output: str, pattern: str = r"(\w\d{3})(\w\d{2}).+\.tif"):
+def LU_Parser(folder: str, dem: str, output: str, reclassify: dict = None,  
+              pattern: str = r"(\w\d{3})(\w\d{2}).+\.tif"):
     minx1, miny1, maxx1, maxy1, _, _, ncols, nrows, _, projection = _Get_Raster_Details(dem)
     files = []
 
@@ -257,7 +287,7 @@ def LU_Parser(folder: str, dem: str, output: str, pattern: str = r"(\w\d{3})(\w\
 
     if len(files) == 0:
         raise ValueError("No files found that are in the extent. Check the extent, filenames, and the patterns!")
-    PrepareLU(dem,files,output)
+    PrepareLU(dem,files,output, reclassify)
     
 def _Get_Raster_Details(raster_file: str):
     """
@@ -301,9 +331,9 @@ def PrepareStream(dem_file_path: str, shapefile: str, out_path: str, field: str 
     Parameters
     ----------
     dem_file_path : string, os.path object
-        Path to DEM file, or a folder containing a DEM file
+        Path to DEM file, or a folder containing a DEM file,
     shapefile : string, os.path object
-        Path to stream shapefile
+        Path to stream shapefile, a list of such, a folder containing one .shp or .gpkg file
     out_path : string, os.path object
         Path, including name and file extension, of the output
     field : string, optional
@@ -325,14 +355,56 @@ def PrepareStream(dem_file_path: str, shapefile: str, out_path: str, field: str 
 
     """
 
-    _checkExistence([dem_file_path, shapefile])
+    if isinstance(shapefile, (list, tuple)):
+        shapefiles = shapefile
+    elif isinstance(shapefile, str):
+        if os.path.isdir(shapefile):
+            shapefiles = [os.path.join(shapefile, file) for file in os.listdir(shapefile) if file.endswith(('.gpkg','.shp'))]
+        elif shapefile.endswith(('.gpkg','.shp')):
+            shapefiles = [shapefile]
+        else:
+            raise ValueError("Bad shapefile path")
+    else:
+        raise ValueError(f"Invalid type for shapefile: {type(shapefile)}")
 
-    (minx, miny, maxx, maxy, _, _, ncols, nrows, _, _) = _Get_Raster_Details(dem_file_path)
-    LayerName = os.path.basename(shapefile).split('.')[-2]
+    (minx, miny, maxx, maxy, _, _, ncols, nrows, geo, proj) = _Get_Raster_Details(dem_file_path)
 
-    options = gdal.RasterizeOptions(noData=0, outputType=gdal.GDT_UInt32, attribute=field, width=ncols, height=nrows, 
-                                    outputBounds=(minx, miny, maxx, maxy), layers=LayerName)
-    gdal.Rasterize(out_path, shapefile, options=options)
+    if len(shapefiles) == 1:
+        LayerName = os.path.basename(shapefile).split('.')[-2]
+
+        options = gdal.RasterizeOptions(noData=0, outputType=gdal.GDT_UInt32, attribute=field, width=ncols, height=nrows, 
+                                        outputBounds=(minx, miny, maxx, maxy), layers=LayerName)
+        gdal.Rasterize(out_path, shapefile, options=options)
+
+    # Create a new memory-based raster dataset to hold the combined result
+    #output_dataset = gdal.GetDriverByName('MEM').Create('', ncols, nrows, len(shapefiles), gdal.GDT_UInt32)
+    driver = ogr.GetDriverByName("Memory")
+    out_ds = driver.CreateDataSource("")
+    out_layer = out_ds.CreateLayer("", None, ogr.wkbLineString)
+    out_ds.SetProjection(proj)
+    out_ds.SetGeoTransform(geo)
+
+    input_ds = ogr.Open(shapefiles[0])
+    input_layer = input_ds.GetLayer()
+
+    # Copy field definitions
+    for i in range(input_layer.GetLayerDefn().GetFieldCount()):
+        field_def = input_layer.GetLayerDefn().GetFieldDefn(i)
+        out_layer.CreateField(field_def)
+
+    input_ds = None
+
+    # Copy features from all input shapefiles to the output shapefile
+    for shapefile in shapefiles:
+        input_ds = ogr.Open(shapefile)
+        input_layer = input_ds.GetLayer()
+        
+        for feature in input_layer:
+            out_layer.CreateFeature(feature.Clone())
+
+        input_ds = None  # Close the input shapefile
+
+    
 
 def _checkExistence(paths_to_check: list) -> None:
     for path in paths_to_check:
@@ -345,7 +417,10 @@ def _returnBasename(path: str) -> str:
     head, tail = os.path.split(path)
     return tail or os.path.basename(head)
 
-def _sizeof_fmt(num):
+def _sizeof_fmt(num:int) -> str:
+    """
+    Take in an int number of bytes, outputs a string that is human readable
+    """
     for unit in ("B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB"):
         if abs(num) < 1024.0:
             return f"{num:3.1f} {unit}"
@@ -1022,7 +1097,10 @@ def FloodSpreader(EXE: str, DEM: str, VDT: str, OutName: str, Database: bool = T
     finally:
         os.remove(MIFN)
 
-def FloodSpreaderPy(DEMfile, VDT, OutName, Database=True, COMIDFile='', AdjustFlow=1, ARBathy='',FSBathy='', TWDF=1.5, WSEDist=10, WSEStDev=0.25, WSERmv3=False, SpecifiedDpth=10, JstStrmDpths = False, UseARTW=False, OutDEP=False, OutFLD = False, OutVEL=False, OutWSE=False, DONTRUN=False, MIFN='tempMIF.txt', Silent=True, FloodBadCells=False,UseARDepths=False, SmoothWSE=False, UseARDepthsStDev=False,SpecifyDepth=False):
+def FloodSpreaderPy(DEMfile, VDT, OutName, Database=True, COMIDFile='', AdjustFlow=1, ARBathy='',FSBathy='', TWDF=1.5, WSEDist=10, 
+                    WSEStDev=0.25, WSERmv3=False, SpecifiedDpth=10, JstStrmDpths = False, UseARTW=False, OutDEP=False, OutFLD = False, 
+                    OutVEL=False, OutWSE=False, DONTRUN=False, MIFN='tempMIF.txt', Silent=True, FloodBadCells=False,UseARDepths=False, 
+                    SmoothWSE=False, UseARDepthsStDev=False,SpecifyDepth=False):
 
     """
     Create a floodmap, using a DEM, a VDT file, and usually a COMID file.
@@ -1658,9 +1736,7 @@ def FloodSpreaderPy(DEMfile, VDT, OutName, Database=True, COMIDFile='', AdjustFl
     Sim_time = time.time() - Start_Time
     if not Silent:print(f"\n\nSimulation time: {Sim_time:.3f} seconds or {Sim_time/60} minutes")
     return
-
-                        
- 
+                    
 def  _VDT_Get_Num_Min_Max_COMIDs(VDT: str):
     # Gets the number of lines in the file and the number of points between the min and max COMIDs
     with open(VDT, 'r') as f:
