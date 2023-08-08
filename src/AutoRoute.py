@@ -1,3 +1,8 @@
+"""
+main.py
+AutoRoute
+"""
+
 import os
 import subprocess
 import re
@@ -6,6 +11,8 @@ import pandas as pd
 import concurrent.futures
 from datetime import datetime
 import time
+import geopandas as gpd
+from shapely.geometry import box, MultiLineString
 
 try:
     import gdal
@@ -17,8 +24,34 @@ except:
 	from osgeo.gdalconst import GA_ReadOnly
 
 gdal.UseExceptions()
-os.environ['PROJ_LIB'] = "C:\\Users\\lrr43\\.conda\\envs\\gdal\\Library\\share\\proj"
-os.environ['GDAL_DATA'] = "C:\\Users\\lrr43\\.conda\\envs\\gdal\\Library\\share"
+# os.environ['PROJ_LIB'] = "C:\\Users\\lrr43\\.conda\\envs\\gdal\\Library\\share\\proj"
+# os.environ['GDAL_DATA'] = "C:\\Users\\lrr43\\.conda\\envs\\gdal\\Library\\share"
+
+def Preprocess(dem_folder: str, lu_folder: str, streams: str, flowfile_to_sim: str, temp_folder: str, 
+               extent: tuple or list = None, clip: str = None, reach_id: str = 'LINKNO', 
+               flows_to_use: str or list = None, reclassify_dict: dict = None, overwrite: bool = False):
+    """
+    Main function that will preprocess everything
+    """
+
+    out_dem = os.path.join(temp_folder,'dem.tif')
+    os.makedirs(out_dem, exist_ok=True)
+    out_lu = os.path.join(temp_folder, 'lu.tif')
+    os.makedirs(out_lu, exist_ok=True)
+    out_strm = os.path.join(temp_folder, 'strm.tif')
+    os.makedirs(out_strm, exist_ok=True)
+    out_rapid = os.path.join(temp_folder, 'rapid.txt')
+    os.makedirs(out_rapid, exist_ok=True)
+
+    DEM_Parser(dem_folder, out_dem, extent, clip)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        # Submit the functions to the executor
+        future1 = executor.submit(LU_Parser, lu_folder, out_dem, out_lu, reclassify_dict)
+        future2 = executor.submit(PrepareStream, out_dem, streams, out_strm, reach_id)
+        
+        concurrent.futures.wait([future2], return_when=concurrent.futures.FIRST_COMPLETED)
+
+        MakeRAPIDFile(flowfile_to_sim, out_strm,out_rapid,flows_to_use,reach_id)
 
 def Preprocess(dem_folder: str, lu_folder: str, streams: str, flowfile_to_sim: str, temp_folder: str, 
                extent: tuple or list = None, clip: str = None, reach_id: str = 'LINKNO', 
@@ -167,10 +200,10 @@ def PrepareDEM(dem, output: str, extent = None, clip = None):
     minx, miny, maxx, maxy, dx, dy, ncols, nrows, geoTransform, projection = _Get_Raster_Details(tiff_files[0])
 
     # Check if the projection is EPSG:4326 (WGS84)
-    if 'EPSG:4326' not in projection:
-        # Reproject all GeoTIFFs to EPSG:4326
-        projection = osr.SpatialReference()
-        projection.ImportFromEPSG(4326)
+    # if 'EPSG:4326' not in projection:
+    #     # Reproject all GeoTIFFs to EPSG:4326
+    #     projection = osr.SpatialReference()
+    #     projection.ImportFromEPSG(4326)
 
     # Create an in-memory VRT (Virtual Dataset) for merging the GeoTIFFs
     vrt_options = gdal.BuildVRTOptions(resampleAlg='bilinear')
@@ -215,8 +248,11 @@ def PrepareDEM(dem, output: str, extent = None, clip = None):
     try:
         gdal.Warp(output, vrt_dataset, options=warp_options)
     except RuntimeError as e:
-        disk, required = re.findall(r"(\d+)", str(e))
-        raise MemoryError(f"Need {_sizeof_fmt(int(required))}; {_sizeof_fmt(int(disk))} of space on this machine")
+        try:
+            disk, required = re.findall(r"(\d+)", str(e))
+            raise MemoryError(f"Need {_sizeof_fmt(int(required))}; {_sizeof_fmt(int(disk))} of space on this machine")
+        except:
+            print(e)
 
     print('finished')
 
@@ -227,8 +263,6 @@ def DEM_Parser(folder: str, output: str, extent: tuple or list = None, clip: str
                pattern: str = r"(\w\d{2})(\w\d{3})-(\w\d{2})(\w\d{3}).+", 
                file_pattern = r"(\w\d{2})(\w\d{3}).+"):
     """
-    Takes in a path to a folder of folders containing DEMs. By default we match the FABDEM naming 
-    convention for the pattern but others can be used. Extent is giving in the format of (minx, miny, maxx, maxy)
     """
     # some checks
     if clip is None and extent is None:
@@ -250,10 +284,12 @@ def DEM_Parser(folder: str, output: str, extent: tuple or list = None, clip: str
         miny2, minx2, maxy2, maxx2 = folder_extent
         if (minx1 <= maxx2 and maxx1 >= minx2 and miny1 <= maxy2 and maxy1 >= miny2):
             folders_to_inspect.append(folder)
-
+    
     files = []
     for folder in folders_to_inspect:
         for file in os.listdir(folder):
+            if not file.endswith('.tif'):
+                continue
             file_extent = [int(x[1:]) if x[0] in 'NE' else -int(x[1:]) for x in re.findall(file_pattern, file)[0]]
             file_extent.reverse()
             file_extent += [file_extent[0] + 1, file_extent[1] + 1]
@@ -267,6 +303,7 @@ def DEM_Parser(folder: str, output: str, extent: tuple or list = None, clip: str
     elif len(files) == 1:
         return files[0]
     elif clip == None:
+        print(files)
         PrepareDEM(files, output, extent)
     else:
         PrepareDEM(files, output, clip=clip)
@@ -492,6 +529,8 @@ def MakeRAPIDFile(mainfile: str, stream_raster: str, out_path: str, flows: str o
         if len(files) > 1:
             print(f"WARNING: multiple files found, using {files[0]}")
         stream_raster = os.path.join(stream_raster, files[0])
+
+    print(mainfile)
 
     # If a shapefile/gpkg
     if mainfile.endswith(('.shp', '.gpkg')) and os.path.isfile(mainfile):
@@ -1094,8 +1133,6 @@ def FloodSpreader(EXE: str, DEM: str, VDT: str, OutName: str, Database: bool = T
             c = subprocess.call([EXE, MIFN])
     except Exception as e:
         print(e)
-    finally:
-        os.remove(MIFN)
 
 def FloodSpreaderPy(DEMfile, VDT, OutName, Database=True, COMIDFile='', AdjustFlow=1, ARBathy='',FSBathy='', TWDF=1.5, WSEDist=10, 
                     WSEStDev=0.25, WSERmv3=False, SpecifiedDpth=10, JstStrmDpths = False, UseARTW=False, OutDEP=False, OutFLD = False, 
@@ -1979,6 +2016,65 @@ def _Create_VDT_File_Based_On_Database(VDT_FILE: str, VDT_DATABASE_FILE: str, ID
                 if n % 10000 == 0:
                     _printProgressBar(n,numPoints)
 
+
+
+
+    ##Takes in a path to a folder of folders containing DEMs. By default we match the FABDEM naming convention for the pattern but others can be used. Extent is giving in the format of (minx, miny, maxx, maxy)
+
+def StreamLine_Parser(dem: str, root_folder: str, extents: str, output_strm: str, field: str = 'TDXHydroLi'):
+    # Load the DEM extent
+    minx, miny, maxx, maxy, _, _, ncols, nrows, geoTransform, _ = _Get_Raster_Details(dem)
+
+    extents_df = pd.read_parquet(extents)
+    filtered_gdf = extents_df[
+        (minx <= extents_df.maxx) &
+        (maxx >= extents_df.minx) &
+        (miny <= extents_df.maxy) &
+        (maxy >= extents_df.miny)
+    ]
+
+    vpus = filtered_gdf.VPUCode.unique()
+    
+    for folder in os.listdir(root_folder):
+            folder_path = os.path.join(root_folder, folder)
+            if not os.path.isdir(folder_path):
+                continue
+
+            for file in os.listdir(folder_path):
+                if file.endswith('.parquet') and int(file[4:7]) in vpus:
+                    vpu_df = gpd.read_parquet(os.path.join(folder_path, file))
+                    filtered_gdf = filtered_gdf.merge(vpu_df[['TDXHydroLinkNo', 'geometry']], on='TDXHydroLinkNo', how='left')
+
+    geometry_columns = [col for col in filtered_gdf.columns if col.startswith('geometry_')]
+
+    # # Create a new 'geometry' column by applying a lambda function
+    def merge_geometries(row):
+        geometries = row.dropna().values
+        if len(geometries) > 1:
+            return MultiLineString(geometries)
+        else:
+            return geometries[0]
         
-       
-                    
+    filtered_gdf['geometry'] = filtered_gdf[geometry_columns].apply(merge_geometries, axis=1)
+
+    # # Drop the individual geometry columns
+    gpd.GeoDataFrame(filtered_gdf.drop(columns=geometry_columns)[['TDXHydroLinkNo', 'geometry']], crs='EPSG:4326').to_file('temp.shp')
+
+    # Open the data source and read in the extent
+    source_ds = ogr.Open('temp.shp')
+    if source_ds is None:
+        raise Exception("Failed to open the source data source.")
+ 
+    source_layer = source_ds.GetLayer()
+
+    # Create the destination data source
+    target_ds = gdal.GetDriverByName('GTiff').Create(output_strm, ncols, nrows, 1, gdal.GDT_UInt32)
+    target_ds.SetGeoTransform(geoTransform)
+    band = target_ds.GetRasterBand(1)
+    band.SetNoDataValue(0)
+
+    # Rasterize
+    gdal.RasterizeLayer(target_ds, [1], source_layer, options=["ATTRIBUTE=" + field])
+    os.remove('temp.shp')
+
+ 

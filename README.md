@@ -7,6 +7,4 @@ A python package under developement that offers a suite of tools for preprocessi
 TBA
 
 ### Authors / Contributers
-Louis Rosas
-
-Do not distribute this package without permission from Brigham Young Universities Hydroinformatics lab.
+Louis R. Rosas, Mike Follum, Taylor Miskin
