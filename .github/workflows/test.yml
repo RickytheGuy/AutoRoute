@@ -15,10 +15,10 @@ jobs:
     - name: Check Out Code
       uses: actions/checkout@v3
 
-    - name: Set up Python 3.11
+    - name: Set up Python
       uses: actions/setup-python@v2
       with:
-        python-version: 3.11
+        python-version: "*"
 
     - name: Create environment with mamba
       uses: conda-incubator/setup-miniconda@v2
@@ -26,9 +26,10 @@ jobs:
         mamba-version: "*"
         channels: conda-forge,defaults
         auto-activate-base: false
-        activate-environment: inflows
+        activate-environment: gdal
         environment-file: environment.yml
 
     - name: Run Tests
       run: |
-        python /tests/test_funcs.py
+        ls
+        python /AutoRoute/tests/test_funcs.py
