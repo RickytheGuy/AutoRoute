@@ -4,6 +4,9 @@ AutoRoute
 """
 
 import os
+os.environ['USE_PYGEOS'] = '0'
+os.environ['PROJ_LIB'] = "C:\\Users\\lrr43\\.conda\\envs\\gdal\\Library\\share\\proj"
+os.environ['GDAL_DATA'] = "C:\\Users\\lrr43\\.conda\\envs\\gdal\\Library\\share"
 import subprocess
 import re
 import numpy as np
@@ -24,9 +27,6 @@ except:
 	from osgeo.gdalconst import GA_ReadOnly
 
 gdal.UseExceptions()
-# os.environ['PROJ_LIB'] = "C:\\Users\\lrr43\\.conda\\envs\\gdal\\Library\\share\\proj"
-# os.environ['GDAL_DATA'] = "C:\\Users\\lrr43\\.conda\\envs\\gdal\\Library\\share"
-
 
 def Preprocess(dem_folder: str, lu_folder: str, streams: str, flowfile_to_sim: str, temp_folder: str, 
                extent: tuple or list = None, clip: str = None, reach_id: str = 'LINKNO', 
@@ -309,11 +309,11 @@ def _Get_Raster_Details(raster_file: str):
     try:
         projection = data.GetProjection()
     except RuntimeError as e:
-        print(e)
         print("Consider adding this to the top of your python script, with your paths:")
-        print('os.environ[\'PROJ_LIB\'] = "C:\\Users\\USERNAME\\.conda\\envs\\gdal\\Library\\share\\proj \
-            os.environ[\'GDAL_DATA\'] = "C:\\Users\\USERNAME\\.conda\\envs\\gdal\\Library\\share"')
+        print('os.environ[\'PROJ_LIB\'] = "C:\\Users\\USERNAME\\.conda\\envs\\gdal\\Library\\share\\proj\nos.environ[\'GDAL_DATA\'] = "C:\\Users\\USERNAME\\.conda\\envs\\gdal\\Library\\share"')
+        raise WindowsError(e)
         
+
     geoTransform = data.GetGeoTransform()
     ncols = int(data.RasterXSize)
     nrows = int(data.RasterYSize)
