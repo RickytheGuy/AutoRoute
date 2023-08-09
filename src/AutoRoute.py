@@ -12,7 +12,7 @@ import concurrent.futures
 from datetime import datetime
 import time
 import geopandas as gpd
-from shapely.geometry import box, MultiLineString
+from shapely.geometry import MultiLineString
 
 try:
     import gdal
@@ -27,31 +27,6 @@ gdal.UseExceptions()
 # os.environ['PROJ_LIB'] = "C:\\Users\\lrr43\\.conda\\envs\\gdal\\Library\\share\\proj"
 # os.environ['GDAL_DATA'] = "C:\\Users\\lrr43\\.conda\\envs\\gdal\\Library\\share"
 
-def Preprocess(dem_folder: str, lu_folder: str, streams: str, flowfile_to_sim: str, temp_folder: str, 
-               extent: tuple or list = None, clip: str = None, reach_id: str = 'LINKNO', 
-               flows_to_use: str or list = None, reclassify_dict: dict = None, overwrite: bool = False):
-    """
-    Main function that will preprocess everything
-    """
-
-    out_dem = os.path.join(temp_folder,'dem.tif')
-    os.makedirs(out_dem, exist_ok=True)
-    out_lu = os.path.join(temp_folder, 'lu.tif')
-    os.makedirs(out_lu, exist_ok=True)
-    out_strm = os.path.join(temp_folder, 'strm.tif')
-    os.makedirs(out_strm, exist_ok=True)
-    out_rapid = os.path.join(temp_folder, 'rapid.txt')
-    os.makedirs(out_rapid, exist_ok=True)
-
-    DEM_Parser(dem_folder, out_dem, extent, clip)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        # Submit the functions to the executor
-        future1 = executor.submit(LU_Parser, lu_folder, out_dem, out_lu, reclassify_dict)
-        future2 = executor.submit(PrepareStream, out_dem, streams, out_strm, reach_id)
-        
-        concurrent.futures.wait([future2], return_when=concurrent.futures.FIRST_COMPLETED)
-
-        MakeRAPIDFile(flowfile_to_sim, out_strm,out_rapid,flows_to_use,reach_id)
 
 def Preprocess(dem_folder: str, lu_folder: str, streams: str, flowfile_to_sim: str, temp_folder: str, 
                extent: tuple or list = None, clip: str = None, reach_id: str = 'LINKNO', 
@@ -407,7 +382,7 @@ def PrepareStream(dem_file_path: str, shapefile: str, out_path: str, field: str 
     (minx, miny, maxx, maxy, _, _, ncols, nrows, geo, proj) = _Get_Raster_Details(dem_file_path)
 
     if len(shapefiles) == 1:
-        LayerName = os.path.basename(shapefile).split('.')[-2]
+        LayerName = os.path.basename(shapefile[0]).split('.')[-2]
 
         options = gdal.RasterizeOptions(noData=0, outputType=gdal.GDT_UInt32, attribute=field, width=ncols, height=nrows, 
                                         outputBounds=(minx, miny, maxx, maxy), layers=LayerName)
@@ -441,8 +416,6 @@ def PrepareStream(dem_file_path: str, shapefile: str, out_path: str, field: str 
 
         input_ds = None  # Close the input shapefile
 
-    
-
 def _checkExistence(paths_to_check: list) -> None:
     for path in paths_to_check:
         if not os.path.exists(path):
@@ -454,7 +427,7 @@ def _returnBasename(path: str) -> str:
     head, tail = os.path.split(path)
     return tail or os.path.basename(head)
 
-def _sizeof_fmt(num:int) -> str:
+def _sizeof_fmt(num: int) -> str:
     """
     Take in an int number of bytes, outputs a string that is human readable
     """
@@ -2034,7 +2007,10 @@ def StreamLine_Parser(dem: str, root_folder: str, extents: str, output_strm: str
     ]
 
     vpus = filtered_gdf.VPUCode.unique()
+    if vpus.shape[0] == 0:
+        raise ValueError(f"No streams found in the extent of the DEM!!!")
     
+    counter = 0
     for folder in os.listdir(root_folder):
             folder_path = os.path.join(root_folder, folder)
             if not os.path.isdir(folder_path):
@@ -2044,20 +2020,14 @@ def StreamLine_Parser(dem: str, root_folder: str, extents: str, output_strm: str
                 if file.endswith('.parquet') and int(file[4:7]) in vpus:
                     vpu_df = gpd.read_parquet(os.path.join(folder_path, file))
                     filtered_gdf = filtered_gdf.merge(vpu_df[['TDXHydroLinkNo', 'geometry']], on='TDXHydroLinkNo', how='left')
+                    counter += 1
 
     geometry_columns = [col for col in filtered_gdf.columns if col.startswith('geometry_')]
-
-    # # Create a new 'geometry' column by applying a lambda function
-    def merge_geometries(row):
-        geometries = row.dropna().values
-        if len(geometries) > 1:
-            return MultiLineString(geometries)
-        else:
-            return geometries[0]
         
-    filtered_gdf['geometry'] = filtered_gdf[geometry_columns].apply(merge_geometries, axis=1)
+    if counter > 1:
+        filtered_gdf['geometry'] = filtered_gdf[geometry_columns].apply(_merge_geometries, axis=1)
 
-    # # Drop the individual geometry columns
+    # Drop the individual geometry columns
     gpd.GeoDataFrame(filtered_gdf.drop(columns=geometry_columns)[['TDXHydroLinkNo', 'geometry']], crs='EPSG:4326').to_file('temp.shp')
 
     # Open the data source and read in the extent
@@ -2077,4 +2047,10 @@ def StreamLine_Parser(dem: str, root_folder: str, extents: str, output_strm: str
     gdal.RasterizeLayer(target_ds, [1], source_layer, options=["ATTRIBUTE=" + field])
     os.remove('temp.shp')
 
- 
+
+def _merge_geometries(row):
+    geometries = row.dropna().values
+    if len(geometries) > 1:
+        return MultiLineString(geometries)
+    else:
+        return geometries[0]
