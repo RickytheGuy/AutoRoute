@@ -66,7 +66,7 @@ exit /B
 echo .
 echo .
 echo Proceeding to installation. Please assign the installation directories..
-TIMEOUT /T 10
+TIMEOUT 10
 
 :: Run the three setup files successively.
 pratyush_temporary\python-3.7.9-amd64.exe
