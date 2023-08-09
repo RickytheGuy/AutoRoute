@@ -32,4 +32,5 @@ jobs:
     - name: Run Tests
       run: |
         ls
+        pwd
         python /AutoRoute/tests/test_funcs.py

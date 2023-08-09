@@ -9,10 +9,7 @@ dependencies:
   - pandas
   - pyarrow
   - python
-  - rasterio
-  - scikit-learn
   - shapely
-  - xarray
 variables:
   USE_PATH_FOR_GDAL_PYTHON: YES
 
