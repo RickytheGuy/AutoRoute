@@ -32,6 +32,6 @@ jobs:
     - name: Run Tests
       working-directory: ./tests
       run: |
-        ls
+        conda install -c conda-forge gdal
         pwd
         python test_funcs.py
