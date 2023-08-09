@@ -27,8 +27,8 @@ jobs:
         channels: conda-forge,defaults
         auto-activate-base: false
         activate-environment: inflows
-        environment-file: envs/environment.yml
+        environment-file: environment.yml
 
     - name: Run Tests
       run: |
-        python ./tests/test_funcs.py
+        python /tests/test_funcs.py
