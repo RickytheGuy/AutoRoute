@@ -35,34 +35,34 @@ echo ###########################################################################
 :: If you changed the Python version, update the below line too.
 curl --output pratyush_temporary\GDAL-3.1.3.win-amd64-py3.7.msi --url http://download.gisinternals.com/sdk/downloads/release-1900-x64-gdal-3-1-3-mapserver-7-6-1/GDAL-3.1.3.win-amd64-py3.7.msi
 
-echo .
-echo .
+@REM echo .
+@REM echo .
 
-:: Perform checks for the files.
-if exist pratyush_temporary\python-3.7.9-amd64.exe (
-echo Python 3.7.9 64bit successfully downloaded!
-) else (
-echo Python download failed. The program will now terminate, please start manually.
-exit /B
-)
+@REM :: Perform checks for the files.
+@REM if exist pratyush_temporary\python-3.7.9-amd64.exe (
+@REM echo Python 3.7.9 64bit successfully downloaded!
+@REM ) else (
+@REM echo Python download failed. The program will now terminate, please start manually.
+@REM exit /B
+@REM )
 
-if exist pratyush_temporary\gdal-301-1900-x64-core.msi (
-echo GDAL Core 3.1.1 64bit successfully downloaded!
-) else (
-echo GDAL core download failed. The program will now terminate, please start manually.
-exit /B
-)
+@REM if exist pratyush_temporary\gdal-301-1900-x64-core.msi (
+@REM echo GDAL Core 3.1.1 64bit successfully downloaded!
+@REM ) else (
+@REM echo GDAL core download failed. The program will now terminate, please start manually.
+@REM exit /B
+@REM )
 
-if exist pratyush_temporary\GDAL-3.1.3.win-amd64-py3.7.msi (
-echo GDAL for Python successfully downloaded!
-) else (
-echo GDAL for Python download failed. The program will now terminate, please start manually.
-exit /B
-)
+@REM if exist pratyush_temporary\GDAL-3.1.3.win-amd64-py3.7.msi (
+@REM echo GDAL for Python successfully downloaded!
+@REM ) else (
+@REM echo GDAL for Python download failed. The program will now terminate, please start manually.
+@REM exit /B
+@REM )
 
-echo .
-echo .
-echo Proceeding to installation. Please assign the installation directories..
+@REM echo .
+@REM echo .
+@REM echo Proceeding to installation. Please assign the installation directories..
 
 :: Run the three setup files successively.
 pratyush_temporary\python-3.7.9-amd64.exe
