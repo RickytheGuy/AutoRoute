@@ -7,8 +7,6 @@ jobs:
   test:
     name: Test New Code Outputs vs Old Outputs
     runs-on: windows-latest
-    env:
-      working-directory: ./tests
     defaults:
       run:
         shell: bash -l {0} # For conda envs: https://github.com/marketplace/actions/setup-miniconda#important
@@ -32,8 +30,8 @@ jobs:
         environment-file: environment.yml
 
     - name: Run Tests
+      working-directory: ./tests
       run: |
         ls
         pwd
         python test_funcs.py
-        working-directory: ${{env.working-directory}}
