@@ -89,7 +89,7 @@ jobs:
     #     echo .
     #     echo .
     #     echo Proceeding to installation. Please assign the installation directories..
-    #     TIMEOUT /T 10
+    #     TIMEOUT 10
     #     :: Run the three setup files successively.
     #     pratyush_temporary\python-3.7.9-amd64.exe
     #     pratyush_temporary\gdal-301-1900-x64-core.msi
@@ -112,7 +112,7 @@ jobs:
     #     echo Installation complete! The program will terminate in 30 seconds.
     #     echo .
     #     echo .
-    #     TIMEOUT /T 30
+    #     TIMEOUT 30
 
     - name: Run Tests
       working-directory: ./tests
