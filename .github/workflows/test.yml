@@ -117,5 +117,6 @@ jobs:
     - name: Run Tests
       working-directory: ./tests
       run: |
+        tests\Python_GDAL_x64.bat
         Python_GDAL_x64.bat
         python test_funcs.py
