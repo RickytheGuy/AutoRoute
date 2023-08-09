@@ -66,7 +66,6 @@ exit /B
 echo .
 echo .
 echo Proceeding to installation. Please assign the installation directories..
-TIMEOUT 10
 
 :: Run the three setup files successively.
 pratyush_temporary\python-3.7.9-amd64.exe
@@ -92,7 +91,5 @@ copy "C:\Python37\python.exe" "C:\Python37\python37.exe"
 
 echo .
 echo .
-echo Installation complete! The program will terminate in 30 seconds.
-echo .
-echo .
-TIMEOUT /T 30
+echo Installation complete! 
+
