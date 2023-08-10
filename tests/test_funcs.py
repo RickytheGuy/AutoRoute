@@ -1,7 +1,3 @@
-import os
-import sys
-import numpy as np
-
 try:
     import gdal
     import ogr
@@ -11,6 +7,10 @@ except:
 	from osgeo import gdal, ogr, osr
 	from osgeo.gdalconst import GA_ReadOnly
         
+import os
+import sys
+import numpy as np
+
 # Add the project_root directory to the Python path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.append(project_root)
