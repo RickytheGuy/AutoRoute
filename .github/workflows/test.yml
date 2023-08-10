@@ -15,116 +15,34 @@ jobs:
     - name: Check Out Code
       uses: actions/checkout@v3
 
-    # - name: Set up Python
-    #   uses: actions/setup-python@v2
-    #   with:
-    #     python-version: "3.7"
-
-    # - name: Create environment with mamba
-    #   uses: conda-incubator/setup-miniconda@v2
-    #   with:
-    #     mamba-version: "*"
-    #     channels: conda-forge,defaults
-    #     auto-activate-base: false
-    #     activate-environment: gdal
-    #     environment-file: environment.yml
-
-    # - name: Really Get GDAL
-    #   run: |
-    #     @echo off
-    #     echo Author: Pratyush Tripathy
-    #     echo Email:  pratkrt@gmail.com
-    #     echo Date created: 17 October 2020
-    #     :: echo %~dp0
-    #     cd /D %~dp0
-    #     if not exist "pratyush_temporary\" mkdir pratyush_temporary
-    #     echo .
-    #     echo .
-    #     echo Sit back and relax while your files are being downloaded.
-    #     echo .
-    #     echo .
-    #     echo Downloading Python 3.7.9 64-bit
-    #     echo ....................................................................................
-    #     echo ####################################################################################
-    #     :: If you want to download a different Python version, update the below line.
-    #     curl --output pratyush_temporary\python-3.7.9-amd64.exe --url https://www.python.org/ftp/python/3.7.9/python-3.7.9-amd64.exe
-    #     echo .
-    #     echo .
-    #     echo Downloading GDAL Core 3.1.1 64-bit
-    #     echo ....................................................................................
-    #     echo ####################################################################################
-    #     :: If you want to download a different GDAL version, update the below line.
-    #     curl --output pratyush_temporary\gdal-301-1900-x64-core.msi --url http://download.gisinternals.com/sdk/downloads/release-1900-x64-gdal-3-1-3-mapserver-7-6-1/gdal-301-1900-x64-core.msi
-    #     echo .
-    #     echo .
-    #     echo Downloading GDAL for Python
-    #     echo ....................................................................................
-    #     echo ####################################################################################
-    #     :: If you changed the Python version, update the below line too.
-    #     curl --output pratyush_temporary\GDAL-3.1.3.win-amd64-py3.7.msi --url http://download.gisinternals.com/sdk/downloads/release-1900-x64-gdal-3-1-3-mapserver-7-6-1/GDAL-3.1.3.win-amd64-py3.7.msi
-    #     echo .
-    #     echo .
-    #     :: Perform checks for the files.
-    #     if exist pratyush_temporary\python-3.7.9-amd64.exe (
-    #     echo Python 3.7.9 64bit successfully downloaded!
-    #     ) else (
-    #     echo Python download failed. The program will now terminate, please start manually.
-    #     TIMEOUT /T 15
-    #     exit /B
-    #     )
-    #     if exist pratyush_temporary\gdal-301-1900-x64-core.msi (
-    #     echo GDAL Core 3.1.1 64bit successfully downloaded!
-    #     ) else (
-    #     echo GDAL core download failed. The program will now terminate, please start manually.
-    #     TIMEOUT /T 15
-    #     exit /B
-    #     )
-    #     if exist pratyush_temporary\GDAL-3.1.3.win-amd64-py3.7.msi (
-    #     echo GDAL for Python successfully downloaded!
-    #     ) else (
-    #     echo GDAL for Python download failed. The program will now terminate, please start manually.
-    #     TIMEOUT /T 15
-    #     exit /B
-    #     )
-    #     echo .
-    #     echo .
-    #     echo Proceeding to installation. Please assign the installation directories..
-    #     TIMEOUT 10
-    #     :: Run the three setup files successively.
-    #     pratyush_temporary\python-3.7.9-amd64.exe
-    #     pratyush_temporary\gdal-301-1900-x64-core.msi
-    #     pratyush_temporary\GDAL-3.1.3.win-amd64-py3.7.msi
-    #     echo .
-    #     echo .
-    #     echo All programs installed. Adding paths to environment variables.
-    #     :: Add the path to system environment variables.
-    #     setx /m path "%path%;C:\Program Files\GDAL;
-    #     setx /m path "%path%;C:\Python37;
-    #     setx /m path "%path%;C:\Python37\Scripts;
-    #     :: Create new variables in the system environment for GDAL.
-    #     setx /m GDAL_DATA "C:\Program Files\GDAL\gdal-data"
-    #     setx /m GDAL_DRIVER_PATH "C:\Program Files\GDAL\gdalplugins"
-    #     setx /m GDAL_VERSION "3.1.1"
-    #     :: Rename the Python file to be able to call from Command Prompt.
-    #     copy "C:\Python37\python.exe" "C:\Python37\python37.exe"
-    #     echo .
-    #     echo .
-    #     echo Installation complete! The program will terminate in 30 seconds.
-    #     echo .
-    #     echo .
-    #     TIMEOUT 30
-
-    - name: Run Tests
-      working-directory: ./tests
+    - name: Set up Python
+      uses: actions/setup-python@v2
+      with:
+        python-version: 3.x  # Replace with your desired Python version
+    
+    - name: Install GDAL dependencies
       run: |
-        curl --output python-3.7.9-amd64.exe --url https://www.python.org/ftp/python/3.7.9/python-3.7.9-amd64.exe
-        curl --output gdal-301-1900-x64-core.msi --url http://download.gisinternals.com/sdk/downloads/release-1900-x64-gdal-3-1-3-mapserver-7-6-1/gdal-301-1900-x64-core.msi
-        gdal-301-1900-x64-core.msi
-        GDAL-3.1.3.win-amd64-py3.7.msi
-        setx /m path "%path%;C:\Program Files\GDAL;
-        setx /m path "%path%;C:\Python37;
-        setx /m path "%path%;C:\Python37\Scripts;
-        setx /m GDAL_DATA "C:\Program Files\GDAL\gdal-data"
-        setx /m GDAL_DRIVER_PATH "C:\Program Files\GDAL\gdalplugins"
-        setx /m GDAL_VERSION "3.1.1"
-        python test_funcs.py
+        # Download GDAL and Python installers
+        Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.7.9/python-3.7.9-amd64.exe" -OutFile "python-3.7.9-amd64.exe"
+        Invoke-WebRequest -Uri "http://download.gisinternals.com/sdk/downloads/release-1900-x64-gdal-3-1-3-mapserver-7-6-1/gdal-301-1900-x64-core.msi" -OutFile "gdal-301-1900-x64-core.msi"
+        
+        # Install GDAL
+        Start-Process -Wait -FilePath "python-3.7.9-amd64.exe" -ArgumentList "/quiet InstallAllUsers=1 Include_test=0"
+        Start-Process -Wait -FilePath "gdal-301-1900-x64-core.msi" -ArgumentList "/quiet"
+        
+        # Add GDAL and Python to PATH
+        [Environment]::SetEnvironmentVariable("Path", $env:Path + ";C:\Program Files\GDAL;C:\Python37;C:\Python37\Scripts", [EnvironmentVariableTarget]::Machine)
+    
+    - name: Set GDAL_DATA and GDAL_DRIVER_PATH
+      run: |
+        [Environment]::SetEnvironmentVariable("GDAL_DATA", "C:\Program Files\GDAL\gdal-data", [EnvironmentVariableTarget]::Machine)
+        [Environment]::SetEnvironmentVariable("GDAL_DRIVER_PATH", "C:\Program Files\GDAL\gdalplugins", [EnvironmentVariableTarget]::Machine)
+        
+    - name: Check environment variables
+      run: |
+        echo "GDAL_DATA: $env:GDAL_DATA"
+        echo "GDAL_DRIVER_PATH: $env:GDAL_DRIVER_PATH"
+        
+    - name: Run your script
+      run: |
+        python tests/test_funcs.py  # Replace with the actual path to your test script
