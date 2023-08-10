@@ -18,7 +18,7 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v2
       with:
-        python-version: "*"
+        python-version: "3.7"
 
     # - name: Create environment with mamba
     #   uses: conda-incubator/setup-miniconda@v2
@@ -118,8 +118,8 @@ jobs:
       working-directory: ./tests
       run: |
         curl --output gdal-301-1900-x64-core.msi --url http://download.gisinternals.com/sdk/downloads/release-1900-x64-gdal-3-1-3-mapserver-7-6-1/gdal-301-1900-x64-core.msi
-        gdal-301-1900-x64-core.msi
-        GDAL-3.1.3.win-amd64-py3.7.msi
+        ./gdal-301-1900-x64-core.msi
+        ./GDAL-3.1.3.win-amd64-py3.7.msi
         setx /m path "%path%;C:\Program Files\GDAL;
         setx /m path "%path%;C:\Python37;
         setx /m path "%path%;C:\Python37\Scripts;
