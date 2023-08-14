@@ -382,7 +382,7 @@ def PrepareStream(dem_file_path: str, shapefile: str, out_path: str, field: str 
     (minx, miny, maxx, maxy, _, _, ncols, nrows, geo, proj) = _Get_Raster_Details(dem_file_path)
 
     if len(shapefiles) == 1:
-        LayerName = os.path.basename(shapefile[0]).split('.')[-2]
+        LayerName = os.path.basename(shapefiles[0]).split('.')[-2]
 
         options = gdal.RasterizeOptions(noData=0, outputType=gdal.GDT_UInt32, attribute=field, width=ncols, height=nrows, 
                                         outputBounds=(minx, miny, maxx, maxy), layers=LayerName)
@@ -393,8 +393,8 @@ def PrepareStream(dem_file_path: str, shapefile: str, out_path: str, field: str 
     driver = ogr.GetDriverByName("Memory")
     out_ds = driver.CreateDataSource("")
     out_layer = out_ds.CreateLayer("", None, ogr.wkbLineString)
-    out_ds.SetProjection(proj)
-    out_ds.SetGeoTransform(geo)
+    projection = osr.SpatialReference()
+    projection.ImportFromEPSG(4326)
 
     input_ds = ogr.Open(shapefiles[0])
     input_layer = input_ds.GetLayer()
@@ -415,6 +415,9 @@ def PrepareStream(dem_file_path: str, shapefile: str, out_path: str, field: str 
             out_layer.CreateFeature(feature.Clone())
 
         input_ds = None  # Close the input shapefile
+
+    # out_ds.SetProjection(projection)
+    # out_ds.SetGeoTransform(geo)
 
 def _checkExistence(paths_to_check: list) -> None:
     for path in paths_to_check:
@@ -1268,17 +1271,17 @@ def FloodSpreaderPy(DEMfile, VDT, OutName, Database=True, COMIDFile='', AdjustFl
         
 
     # Open temp VDT
-    _checkExistence([MIFN])
+    _checkExistence([VDT])
     
     #Go through VDT file and create a list of V, D, and T data for each COMID
-    num_lines, numPoints, MinC, MaxC = _VDT_Get_Num_Min_Max_COMIDs(MIFN)
+    num_lines, numPoints, MinC, MaxC = _VDT_Get_Num_Min_Max_COMIDs(VDT)
     if numPoints < 1:
         raise("There are no points in the VDT file, Not Running this Analysis")
     if not Silent:print(f"Min COMID: {MinC}")
     if not Silent:print(f"Max COMID: {MaxC}")
     ID = np.zeros((numPoints+1,))
     T_Max = 0
-    with open(MIFN, 'r') as VDT_FILE:
+    with open(VDT, 'r') as VDT_FILE:
         line = VDT_FILE.readline()
         numCOMIDs = 0
         for line in VDT_FILE:
@@ -1304,7 +1307,7 @@ def FloodSpreaderPy(DEMfile, VDT, OutName, Database=True, COMIDFile='', AdjustFl
     
     # Calculate the average V, D, and T for each COMID
     num = 0
-    with open(MIFN, 'r') as VDT_FILE:
+    with open(VDT, 'r') as VDT_FILE:
         line = VDT_FILE.readline()
         for line in VDT_FILE:
             line = line.strip().split(",")
@@ -1345,7 +1348,7 @@ def FloodSpreaderPy(DEMfile, VDT, OutName, Database=True, COMIDFile='', AdjustFl
             Wlist[i] /= n[i]
             
     # Calculate the StDev 
-    with open(MIFN, 'r') as VDT_FILE:
+    with open(VDT, 'r') as VDT_FILE:
         line = VDT_FILE.readline()
         for line in VDT_FILE:
                 line = line.strip().split(",")
@@ -1454,7 +1457,7 @@ def FloodSpreaderPy(DEMfile, VDT, OutName, Database=True, COMIDFile='', AdjustFl
 
 
     # Go Through And Start Flooding
-    with open(MIFN, 'r') as VDT_FILE:
+    with open(VDT, 'r') as VDT_FILE:
         line = VDT_FILE.readline()
         for progress, line in enumerate(VDT_FILE):
             line = line.strip().split(",")
@@ -1630,13 +1633,11 @@ def FloodSpreaderPy(DEMfile, VDT, OutName, Database=True, COMIDFile='', AdjustFl
     if OutVEL:
         U_V = np.divide(U_V,L, out=np.zeros_like(U_V), where=L!=0)
 
-    
-
     # Delete some memory
     if not Silent:print("\n\n\nDeleteing V, D, and n memory")
-    del Dlist
-    del n
-    del Vlist
+    Dlist = np.array([])
+    n = np.array([])
+    Vlist = np.array([])
 
     # Here is a section for taking out flooding behind levees, but again this doesn't seem toi be a current option. Leaving as is
 
