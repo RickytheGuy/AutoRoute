@@ -15,10 +15,12 @@ try:
     import osr
     from gdalconst import GA_ReadOnly
 except:
-	from osgeo import gdal, ogr, osr
-	from osgeo.gdalconst import GA_ReadOnly
+    from osgeo import gdal
+    from osgeo import gdal, ogr, osr
+    from osgeo.gdalconst import GA_ReadOnly
 
 gdal.UseExceptions()
+gdal.SetConfigOption('GDAL_NUM_THREADS', 'ALL_CPUS')
 # os.environ['PROJ_LIB'] = "C:\\Users\\lrr43\\.conda\\envs\\gdal\\Library\\share\\proj"
 # os.environ['GDAL_DATA'] = "C:\\Users\\lrr43\\.conda\\envs\\gdal\\Library\\share"
 
@@ -92,25 +94,38 @@ def PrepareLU(dem_file_path: str, land_file_path: str or list, out_path: str, no
         raise ValueError(f"I dont't know what to do with land file path of type {type(land_file_path)}")
 
     # Check if the projection is EPSG:4326 (WGS84)
-    if '["EPSG","4326"]' not in projection:
-        # Reproject all GeoTIFFs to EPSG:4326
-        projection = osr.SpatialReference()
-        projection.ImportFromEPSG(4326)
+    # if '["EPSG","4326"]' not in projection:
+    #     # Reproject all GeoTIFFs to EPSG:4326
+    #     projection = osr.SpatialReference()
+    #     projection.ImportFromEPSG(4326)
 
     # Create an in-memory VRT (Virtual Dataset) for merging the GeoTIFFs
     vrt_options = gdal.BuildVRTOptions(resampleAlg='nearest')
     vrt_dataset = gdal.BuildVRT('', [tiff_file for tiff_file in tiff_files], options=vrt_options)
-    options = gdal.WarpOptions(outputType=gdal.GDT_UInt16, width=ncols, height=nrows, outputBounds=(minx, miny, maxx, maxy), 
-                                dstSRS=projection, resampleAlg=gdal.GRA_NearestNeighbour, format='VRT')
+
+    # options = gdal.TranslateOptions(
+    #     outputType=gdal.GDT_Byte,
+    #     width=ncols,
+    #     height=nrows,
+    #     outputBounds=(minx, miny, maxx, maxy),
+    #     outputSRS=projection,
+    #     resampleAlg=gdal.GRA_NearestNeighbour,
+    #     format='VRT'
+    # )
+
+    # final_dataset = gdal.Translate('', vrt_dataset, options=options)
+    options = gdal.WarpOptions(outputType=gdal.GDT_Byte, width=ncols, height=nrows, outputBounds=(minx, miny, maxx, maxy), 
+                                dstSRS=projection, resampleAlg=gdal.GRA_NearestNeighbour, format='VRT', multithread=True,
+                                creationOptions = ["COMPRESS=DEFLATE", "PREDICTOR=2"])
     final_dataset = gdal.Warp('', vrt_dataset, options=options) 
 
     hDriver = gdal.GetDriverByName("GTiff")
-    out_file = hDriver.Create(out_path, xsize=ncols, ysize=nrows, bands=1, eType=gdal.GDT_UInt16)
+    out_file = hDriver.Create(out_path, xsize=ncols, ysize=nrows, bands=1, eType=gdal.GDT_Byte)
     out_file.SetGeoTransform(final_dataset.GetGeoTransform())
     out_file.SetProjection(projection)
 
     print("Writing out array... ", end='')
-    block_size = 8192
+    block_size = 30000
     # Process the array in blocks
     for y in range(0, nrows, block_size):
         for x in range(0, ncols, block_size):
@@ -183,6 +198,7 @@ def PrepareDEM(dem, output: str, extent = None, clip = None):
                       vrt_geo[3]  # ymax
                       ]
     
+    warp=True
     if extent is not None:
         # assert (extent[0] > dataset_extent[0] and extent[1] > dataset_extent[1] and
         # extent[2] < dataset_extent[2] and extent[3] < dataset_extent[3]), f"You have specified an extent that is not entirely within the dataset!!\n{dataset_extent}"
@@ -197,32 +213,35 @@ def PrepareDEM(dem, output: str, extent = None, clip = None):
                 extent[i] = e2
             i += 1
 
-        warp_options = gdal.WarpOptions(format='GTiff', dstSRS=projection, dstNodata=0, outputBounds=extent)
+        warp=False
+        translate_options = gdal.TranslateOptions(format='GTiff',outputSRS=projection,noData=99999.0,outputBounds=extent,outputType=gdal.GDT_Float32, creationOptions = ["COMPRESS=DEFLATE", "PREDICTOR=3"])          
     elif clip is not None:
         shp = ogr.Open(clip)
         layer = shp.GetLayer()
-        shp_extent = layer.GetExtent()
+        #shp_extent = layer.GetExtent()
 
         # assert (shp_extent[0] > dataset_extent[0] and shp_extent[1] > dataset_extent[1] and
         # shp_extent[2] < dataset_extent[2] and shp_extent[3] < dataset_extent[3]), "You are trying to clip something that is not entirely within the dataset!!"
 
         name = layer.GetName()
         shp = None
-        warp_options = gdal.WarpOptions(format='GTiff', dstSRS=projection, dstNodata=0, cutlineDSName=clip, cutlineLayer=name, cropToCutline=True)
+        warp_options = gdal.WarpOptions(format='GTiff', dstSRS=projection, dstNodata=99999.0, cutlineDSName=clip, cutlineLayer=name, cropToCutline=True, outputType=gdal.GDT_Float32, multithread=True)
     else:
-        warp_options = gdal.WarpOptions(format='GTiff', dstSRS=projection, dstNodata=0)
+        warp_options = gdal.WarpOptions(format='GTiff', dstSRS=projection, dstNodata=99999.0, outputType=gdal.GDT_Float32, multithread=True)
 
     print(f'Writing {output}... ', end='')
     try:
-        gdal.Warp(output, vrt_dataset, options=warp_options)
+        if warp:
+            gdal.Warp(output, vrt_dataset, options=warp_options)
+        else:
+            gdal.Translate(output, vrt_dataset, options=translate_options)
+        print('finished')
     except RuntimeError as e:
         try:
             disk, required = re.findall(r"(\d+)", str(e))
             raise MemoryError(f"Need {_sizeof_fmt(int(required))}; {_sizeof_fmt(int(disk))} of space on this machine")
         except:
             print(e)
-
-    print('finished')
 
     # Clean up the VRT dataset
     vrt_dataset = None
@@ -237,18 +256,20 @@ def DEM_Parser(folder: str, output: str, extent: tuple or list = None, clip: str
         raise NotImplementedError
     if extent is not None and len(extent) != 4:
         raise ValueError(f'Invalid extent: {extent}')
+    else:
+        minx1, miny1, maxx1, maxy1 = extent
     if clip is not None:
         if not os.path.exists(clip):
             raise ValueError(f'Clip does not exist: {clip}')
         shp = ogr.Open(clip)
         layer = shp.GetLayer()
         extent = layer.GetExtent()
+        minx1, maxx1, miny1, maxy1 = extent
 
     sub_folders = [os.path.join(folder, f) for f in os.listdir(folder) if os.path.isdir(os.path.join(folder,f))]
     folders_to_inspect = []
     for folder in sub_folders:
         folder_extent = [int(x[1:]) if x[0] in 'NE' else -int(x[1:]) for x in re.findall(pattern, folder)[0]]
-        minx1, miny1, maxx1, maxy1 = extent
         miny2, minx2, maxy2, maxx2 = folder_extent
         if (minx1 <= maxx2 and maxx1 >= minx2 and miny1 <= maxy2 and maxy1 >= miny2):
             folders_to_inspect.append(folder)
@@ -261,7 +282,6 @@ def DEM_Parser(folder: str, output: str, extent: tuple or list = None, clip: str
             file_extent = [int(x[1:]) if x[0] in 'NE' else -int(x[1:]) for x in re.findall(file_pattern, file)[0]]
             file_extent.reverse()
             file_extent += [file_extent[0] + 1, file_extent[1] + 1]
-            minx1, miny1, maxx1, maxy1 = extent
             minx2, miny2, maxx2, maxy2 = file_extent
             if (minx1 <= maxx2 and maxx1 >= minx2 and miny1 <= maxy2 and maxy1 >= miny2):
                 files.append(os.path.join(folder,file))
@@ -271,7 +291,6 @@ def DEM_Parser(folder: str, output: str, extent: tuple or list = None, clip: str
     elif len(files) == 1:
         return files[0]
     elif clip == None:
-        print(files)
         PrepareDEM(files, output, extent)
     else:
         PrepareDEM(files, output, clip=clip)
@@ -280,19 +299,26 @@ def DEM_Parser(folder: str, output: str, extent: tuple or list = None, clip: str
 def LU_Parser(folder: str, dem: str, output: str, reclassify: dict = None,  
               pattern: str = r"(\w\d{3})(\w\d{2}).+\.tif"):
     minx1, miny1, maxx1, maxy1, _, _, ncols, nrows, _, projection = _Get_Raster_Details(dem)
+    if miny1 > maxy1:
+        maxy1, miny1 = miny1, maxy1
+    if minx1 > maxx1:
+        maxx1, minx1 = minx1, maxx1
+
     files = []
 
     for file in os.listdir(folder):
+        if 'E020' in file:
+            x=1
         file_extent = [int(x[1:]) if x[0] in 'NE' else -int(x[1:]) for x in re.findall(pattern, file)[0]]
         file_extent[1] -= 20
         file_extent += [file_extent[0]+20, file_extent[1]+20]
         minx2, miny2, maxx2, maxy2 = file_extent
-        if (minx1 <= maxx2 and maxx1 >= minx2 and miny1 <= maxy2 and maxy1 >= miny2):
+        if minx1 <= maxx2 and maxx1 >= minx2 and miny1 <= maxy2 and maxy1 >= miny2:
             files.append(os.path.join(folder,file))
 
     if len(files) == 0:
         raise ValueError("No files found that are in the extent. Check the extent, filenames, and the patterns!")
-    PrepareLU(dem,files,output, reclassify)
+    PrepareLU(dem,files,output,reclassify)
     
 def _Get_Raster_Details(raster_file: str):
     """
@@ -361,12 +387,18 @@ def PrepareStream(dem_file_path: str, shapefile: str, out_path: str, field: str 
     """
 
     _checkExistence([dem_file_path, shapefile])
+    try:
+        (minx, miny, maxx, maxy, _, _, ncols, nrows, _, projection) = _Get_Raster_Details(dem_file_path)
+    except:
+        print("Int failed, retrying")
+        (minx, miny, maxx, maxy, _, _, ncols, nrows, _, projection) = _Get_Raster_Details(dem_file_path)
 
-    (minx, miny, maxx, maxy, _, _, ncols, nrows, _, _) = _Get_Raster_Details(dem_file_path)
     LayerName = os.path.basename(shapefile).split('.')[-2]
 
     options = gdal.RasterizeOptions(noData=0, outputType=gdal.GDT_UInt32, attribute=field, width=ncols, height=nrows, 
-                                    outputBounds=(minx, miny, maxx, maxy), layers=LayerName)
+                                    outputBounds=(minx, miny, maxx, maxy), layers=LayerName,
+                                    outputSRS=projection,
+                                    creationOptions = ["COMPRESS=DEFLATE", "PREDICTOR=2",'ZSTD_LEVEL=5'])
     gdal.Rasterize(out_path, shapefile, options=options)
 
 def _checkExistence(paths_to_check: list) -> None:
@@ -534,6 +566,7 @@ def MakeRAPIDFile(mainfile: str, stream_raster: str, out_path: str, flows: str o
     )
 
     data = None
+    print("DONE! RAPID File is in its FOLDER!")
 
 def AutoRoute(EXE: str, DEM: str, stream: str, RAPID: str, LandUseSameRes: str, out_path: str, Mannings: str, RAPIDflow: str, 
               Spatial_Units: str = 'deg', X_distance: int = 2000, Q: float = 1.024, Prev_D: int = 1, Man_n = None, 
@@ -1002,6 +1035,7 @@ def FloodSpreader(EXE: str, DEM: str, VDT: str, OutName: str, Database: bool = T
         mode = 'a'
     else:
         mode = 'w'
+    mode= 'w'
 
     with open(MIFN, mode) as MIF:
         # Required inputs
@@ -1949,7 +1983,7 @@ def _Create_VDT_File_Based_On_Database(VDT_FILE: str, VDT_DATABASE_FILE: str, ID
 
 def StreamLine_Parser(dem: str, root_folder: str, extents: str, output_strm: str, field: str = 'TDXHydroLi'):
     # Load the DEM extent
-    minx, miny, maxx, maxy, _, _, ncols, nrows, geoTransform, _ = _Get_Raster_Details(dem)
+    minx, miny, maxx, maxy, _, _, ncols, nrows, geoTransform, projection = _Get_Raster_Details(dem)
 
     extents_df = pd.read_parquet(extents)
     filtered_gdf = extents_df[
@@ -1960,7 +1994,8 @@ def StreamLine_Parser(dem: str, root_folder: str, extents: str, output_strm: str
     ]
 
     vpus = filtered_gdf.VPUCode.unique()
-    
+    resulting_dfs = []
+    counter = 0
     for folder in os.listdir(root_folder):
             folder_path = os.path.join(root_folder, folder)
             if not os.path.isdir(folder_path):
@@ -1968,10 +2003,15 @@ def StreamLine_Parser(dem: str, root_folder: str, extents: str, output_strm: str
 
             for file in os.listdir(folder_path):
                 if file.endswith('.parquet') and int(file[4:7]) in vpus:
-                    vpu_df = gpd.read_parquet(os.path.join(folder_path, file))
-                    filtered_gdf = filtered_gdf.merge(vpu_df[['TDXHydroLinkNo', 'geometry']], on='TDXHydroLinkNo', how='left')
+                    resulting_dfs.append(
+                        filtered_gdf.merge(gpd.read_parquet(os.path.join(folder_path, file))[['TDXHydroLinkNo', 'DSContArea', 'geometry']], 
+                                           on='TDXHydroLinkNo', 
+                                           how='inner'
+                                           )
+                        )
+                    counter += 1
 
-    geometry_columns = [col for col in filtered_gdf.columns if col.startswith('geometry_')]
+    #geometry_columns = [col for col in filtered_gdf.columns if col.startswith('geometry_')]
 
     # # Create a new 'geometry' column by applying a lambda function
     def merge_geometries(row):
@@ -1980,14 +2020,19 @@ def StreamLine_Parser(dem: str, root_folder: str, extents: str, output_strm: str
             return MultiLineString(geometries)
         else:
             return geometries[0]
-        
-    filtered_gdf['geometry'] = filtered_gdf[geometry_columns].apply(merge_geometries, axis=1)
+    
+    # if counter > 1:
+    #     filtered_gdf['geometry'] = filtered_gdf[geometry_columns].apply(merge_geometries, axis=1)
 
     # # Drop the individual geometry columns
-    gpd.GeoDataFrame(filtered_gdf.drop(columns=geometry_columns)[['TDXHydroLinkNo', 'geometry']], crs='EPSG:4326').to_file('temp.shp')
+    (gpd.GeoDataFrame(pd.concat(resulting_dfs)[['TDXHydroLinkNo', 'geometry', 'DSContArea']])
+        .to_crs('EPSG:4326')
+        .to_file('temp.gpkg', driver='GPKG'))
+
+    #gpd.GeoDataFrame(filtered_gdf.drop(columns=geometry_columns)[['TDXHydroLinkNo', 'geometry']], crs='EPSG:4326').to_file('temp.gpkg', driver='GPKG')
 
     # Open the data source and read in the extent
-    source_ds = ogr.Open('temp.shp')
+    source_ds = ogr.Open('temp.gpkg')
     if source_ds is None:
         raise Exception("Failed to open the source data source.")
  
@@ -1996,11 +2041,9 @@ def StreamLine_Parser(dem: str, root_folder: str, extents: str, output_strm: str
     # Create the destination data source
     target_ds = gdal.GetDriverByName('GTiff').Create(output_strm, ncols, nrows, 1, gdal.GDT_UInt32)
     target_ds.SetGeoTransform(geoTransform)
+    target_ds.SetProjection(projection)
     band = target_ds.GetRasterBand(1)
     band.SetNoDataValue(0)
 
     # Rasterize
     gdal.RasterizeLayer(target_ds, [1], source_layer, options=["ATTRIBUTE=" + field])
-    os.remove('temp.shp')
-
- 
