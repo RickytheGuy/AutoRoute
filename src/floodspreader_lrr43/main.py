@@ -1,13 +1,15 @@
 import os
 import subprocess
 import re
-import numpy as np
-import pandas as pd
+import time
 import concurrent.futures
 from datetime import datetime
-import time
+
+import numpy as np
+import pandas as pd
 import geopandas as gpd
-from shapely.geometry import box, MultiLineString
+from shapely.geometry import MultiLineString
+from scipy import stats
 
 try:
     import gdal
@@ -21,8 +23,6 @@ except:
 
 gdal.UseExceptions()
 gdal.SetConfigOption('GDAL_NUM_THREADS', 'ALL_CPUS')
-# os.environ['PROJ_LIB'] = "C:\\Users\\lrr43\\.conda\\envs\\gdal\\Library\\share\\proj"
-# os.environ['GDAL_DATA'] = "C:\\Users\\lrr43\\.conda\\envs\\gdal\\Library\\share"
 
 def Preprocess(dem_folder: str, lu_folder: str, streams: str, flowfile_to_sim: str, temp_folder: str, 
                extent: tuple or list = None, clip: str = None, reach_id: str = 'LINKNO', 
@@ -116,7 +116,7 @@ def PrepareLU(dem_file_path: str, land_file_path: str or list, out_path: str, no
     # final_dataset = gdal.Translate('', vrt_dataset, options=options)
     options = gdal.WarpOptions(outputType=gdal.GDT_Byte, width=ncols, height=nrows, outputBounds=(minx, miny, maxx, maxy), 
                                 dstSRS=projection, resampleAlg=gdal.GRA_NearestNeighbour, format='VRT', multithread=True,
-                                creationOptions = ["COMPRESS=DEFLATE", "PREDICTOR=2"])
+                                creationOptions = ["COMPRESS=ZSTD", "PREDICTOR=2","BIGTIFF=YES"])
     final_dataset = gdal.Warp('', vrt_dataset, options=options) 
 
     hDriver = gdal.GetDriverByName("GTiff")
@@ -214,7 +214,15 @@ def PrepareDEM(dem, output: str, extent = None, clip = None):
             i += 1
 
         warp=False
-        translate_options = gdal.TranslateOptions(format='GTiff',outputSRS=projection,noData=99999.0,outputBounds=extent,outputType=gdal.GDT_Float32, creationOptions = ["COMPRESS=DEFLATE", "PREDICTOR=3"])          
+        translate_options = gdal.TranslateOptions(
+            format='GTiff',
+            outputSRS=projection,
+            noData=-9999,
+            outputBounds=extent,
+            outputType=gdal.GDT_Float32, 
+            multithread=True, 
+            creationOptions = ["COMPRESS=ZSTD", "PREDICTOR=3","BIGTIFF=YES"]
+            )          
     elif clip is not None:
         shp = ogr.Open(clip)
         layer = shp.GetLayer()
@@ -225,9 +233,24 @@ def PrepareDEM(dem, output: str, extent = None, clip = None):
 
         name = layer.GetName()
         shp = None
-        warp_options = gdal.WarpOptions(format='GTiff', dstSRS=projection, dstNodata=99999.0, cutlineDSName=clip, cutlineLayer=name, cropToCutline=True, outputType=gdal.GDT_Float32, multithread=True)
+        warp_options = gdal.WarpOptions(
+            format='GTiff', 
+            dstSRS=projection, 
+            dstNodata=-9999,
+            utlineDSName=clip, 
+            cutlineLayer=name, 
+            cropToCutline=True, 
+            outputType=gdal.GDT_Float32, 
+            multithread=True, 
+            creationOptions = ["COMPRESS=ZSTD", "PREDICTOR=3","BIGTIFF=YES"])
     else:
-        warp_options = gdal.WarpOptions(format='GTiff', dstSRS=projection, dstNodata=99999.0, outputType=gdal.GDT_Float32, multithread=True)
+        warp_options = gdal.WarpOptions(
+            format='GTiff', 
+            dstSRS=projection, 
+            dstNodata=-9999, 
+            outputType=gdal.GDT_Float32, 
+            multithread=True, 
+            creationOptions = ["COMPRESS=ZSTD", "PREDICTOR=3","BIGTIFF=YES"])
 
     print(f'Writing {output}... ', end='')
     try:
@@ -398,7 +421,7 @@ def PrepareStream(dem_file_path: str, shapefile: str, out_path: str, field: str 
     options = gdal.RasterizeOptions(noData=0, outputType=gdal.GDT_UInt32, attribute=field, width=ncols, height=nrows, 
                                     outputBounds=(minx, miny, maxx, maxy), layers=LayerName,
                                     outputSRS=projection,
-                                    creationOptions = ["COMPRESS=DEFLATE", "PREDICTOR=2",'ZSTD_LEVEL=5'])
+                                    creationOptions = ["COMPRESS=ZSTD", "PREDICTOR=2","BIGTIFF=YES"])
     gdal.Rasterize(out_path, shapefile, options=options)
 
 def _checkExistence(paths_to_check: list) -> None:
