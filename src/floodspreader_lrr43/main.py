@@ -595,7 +595,7 @@ def AutoRoute(input_yml: str) -> list:
     """
     Make a VDT file with AutoRoute executable. Most parameters are the suggested default values.
 
-    Returns a list to be passed in subprocess.call() or if AutoRouteExe is not specified in the yaml, a lsit containing the 
+    Returns a list to be passed in subprocess.call() or if AutoRouteExe is not specified in the yaml, a list containing the 
     path to the main input file created
 
     Parameters
@@ -661,76 +661,16 @@ def AutoRoute(input_yml: str) -> list:
 def _AR_Write(MIF, Card, Argument) -> None:
     MIF.write(f"{Card}\t{Argument}\n")
 
-def FloodSpreader(EXE: str, DEM: str, VDT: str, OutName: str, Database: bool = True, COMIDFile: str = '', AdjustFlow: float = 1, 
-                  ARBathy: str = '', FSBathy: str = '', Linear_Interp_Bathy: bool = False, Inverse_Bathy: float = None,
-                  TWDF: float = 1.5, AdjstFldDpthMthd: int = 1, WSEDist: int = 10, 
-                  WSEStDev: float = 0.25, WSERmv3: bool = False, SpecifiedDpth: float = 10, UseARTW: bool = False, 
-                  OutDEP: bool = False, OutFLD: bool = False, OutVEL: bool = False, OutWSE: bool = False, DONTRUN: bool = False, 
-                  MIFN: str = 'tempMIF.txt', Silent: bool = True) -> None:
+def FloodSpreader(input_yml) -> list:
     """
     Create a floodmap, using a DEM, a VDT file, and usually a COMID file.
 
-    Returns nothing, but can create a floodmap (.tif)
+    Returns a list to be passed in subprocess.call() or if FloodSpreaderExe is not specified in the yaml, a list containing the 
+    path to the main input file created
 
     Parameters
     ----------
-    EXE : string
-        Path to the FloodSpreader Executable
-    DEM : string
-        Path to DEM file. The raster can be projected or geographic, but the elevation values must be in meters.
-    VDT : string
-        Path to a certain file, see Database.
-    OutName : string
-        Path, name of output including file extension
-    Database : bool, optional
-        By default this is True. If True, COMIDFile must also be specified. If false, uses the Print_VDT file, which  is the main output from AutoRoute that is used as an input for FloodSpreader.  For each stream cell the file has the stream identifier (COMID, HydroID, etc.), row, col, flow, velocity, depth, top-width, elevation, and water surface elevation.  The model uses these values to create a flood map.
-        Otherwise, uses the Print_VDT_Database file, which is used as the database file when using FloodSpreader.  The file is created using AutoRoute.  For each stream cell the file has the stream identifier (COMID, HydroID, etc.), row, col, elevation, baseflow, and for several flow rates the flow, velocity, top-width, and water surface elevation associated.  These values are all precomputed.  The flows that you want to simulate are given to the model using the Comid_Flow_File input card and associated file.  Comid_Flow_File is also required if using Print_VDT_Database.   
-    COMIDFile : string optional
-        This card and associated file are used in conjunction with the Print_VDT_Database card.  The Comid_Flow_File simply lists the stream identifiers (i.e. COMID, HydroID) with their associated flow in cms.
-    AdjustFlow : int, float, optional
-        When assigning flow rates in the model using “Comid_Flow_File”, the flow rate assigned to each stream cell using the COMID_Flow_File is multiplied by the specified floating point.  This is a simple way to change the flow values used within FloodSpreader without having to create a new COMID_Flow_File.  Default value is 1.0, which is no change to the defined flow rate.
-    ARBathy : string, optional
-        The full path to the AutoRoute-generated bathymetry.  All cells that were not included in cross-sections have a value of 0.  The main purpose of this file is as an input into FloodSpreader to create a more complete bathymetric map.
-    FSBathy : string, optional
-        The full path to the FloodSpreader-generated bathymetry.  The bathymetry is burned into the original DEM data.
-    Linear_Interp_Bathy: bool, optional
-        FloodSpreader has the option to use a simple linear interpolation to fill bathymetry estimates between cross-sections.  
-    Inverse_Bathy: float, optional
-        Default is 1.0. To simulate a continuous bathymetric surface an inverse-distance weighting approach is used.
-    TWDF: int, float, optional
-        As discussed in Follum et al., (2020), higher TopWidthDistanceFactor (α) values increase the impact that each stream cell has on surrounding cells when generating a flood inundation map using FloodSpreader. The paper tested several α values and found higher α values resulted in increased accuracy but also increased the computational burden. The paper found α=1.5 provided good coverage of the river floodplain while remaining computationally efficient.  However, those tests were performed at sites in the U.S. using floating-point elevation datasets.  The α value has a default value of 1.5.
-    AdjstFldDpthMthd : int, optional
-        An int betweeen 0 and 5. 0 means no methods to adjust flood depths are used; this is the default. The rest are different methods described below:
-            1: Flood Bad Cells. If the Top Width or Depth value associated with a cell is less than 1e-16 and the Flood_BadCells flag is specified, then the Depth and Top Width used in the cell is set to the average for the stream identifier (basically the stream reach).  This option was included to omit outliers but has NOT proven to be very useful.
-            2: Use AR Depths. Uses the flow depths values originally read-in from the VDT File (Print_VDT).
-            3: Smooth WSE. Input card specified within the main input file telling FloodSpreader to omit outliers using a spatial averaging method.
-            4: Use AR Depths StDev. In an effort to remove outliers, this flag tells FloodSpreader to set the depth and topwidth values of a stream cell to the average for the stream identifier if the value is outside of one standard deviation.  This option has never worked well. 
-            5: Specify Depth. Optional input card that tells FloodSpreader to set a uniform depth for all stream cells.
-    WSEDist : int, optional
-        Used in conjunction with the AdjstFldDpthMthd=3 input card. An optional input card that specifies the proximity in which water surface elevation (WSE) values are analyzed.  The default value is 10, meaning that WSE values in a box 10 cells above, below, to the left, and to the right will be analyzed.  In total, stream cells within a 441 cell box (stream cell being analyzed is omitted) are analyzed to determine the mean and standard deviation of the WSE.
-    WSEStDev : int, float, optional
-        Used in conjunction with the AdjstFldDpthMthd=3 input card. An optional input card that specifies the threshold in which a WSE value is adjusted.  The default value is 0.25, meaning that if the WSE of the stream cell being analyzed is outside of 0.25 standard deviations from the mean it is adjusted.  For example, if the mean WSE of surrounding cells is 156.5 m and the SD for that stream reach is 3.2 m:; If the WSE of the stream cell being analyzed is 157.2 m, it will remain 157.2 m; If the WSE of the stream cell being analyzed is 159.5 m, it will be adjusted to 157.3 m (156.5m + 0.25 * 3.2m); If the WSE of the stream cell being analyzed is 154.2 m, it will be adjusted to 155.7 m (156.5m - 0.25 * 3.2m)
-    WSERmv3 : bool, optional
-        Used in conjunction with the AdjstFldDpthMthd=3 input card. An optional input card that removes the highest 3 flow elevations in the search radius (when using “FloodSpreader_SmoothWSE_SearchDist”).  This was a test to remove outliers.  This option did not work well for a testcase in Croatia, and should not be used until it has shown to be beneficial.
-    SpecifiedDpth : int, float, optional
-        Used in conjunction with the AdjstFldDpthMthd=5 input card. See AdjstFldDpthMthd.
-    UseARTW : bool, optional
-        Uses the top width values originally read-in from the VDT File (Print_VDT). Default is to use the average top width value for the stream identifier.
-    OutDEP : bool, optional
-        Output depth (m) map from FloodSpreader.  Cells that are not considered flooded have a value of 0.
-    OutFLD : bool, optional
-        Output flood map from FloodSpreader.  Cells that are not considered flooded have a value of 0.
-    OutVEL : bool, optional
-       Output flow velocity (m/s) map from FloodSpreader. Cells that are not considered flooded have a value of 0.
-    OutWSE : bool, optional
-        Output water surface depth (m) map from FloodSpreader.  Cells that are not considered flooded have the value from the DEM (DEM_File)
-    DONTRUN : bool, optional
-        If set to True, the program will not run AutoRoute and instead only create the Input File. It is recommended to change the MIF paramter to a desired location
-    MIFN : string, optional
-        Location and name of temporary input file that AutoRoute will use, unless DONTRUN is True, in which case it will not be deleted.
-    Silent : bool, optional
-        If True, nothing will appear in the console when running AutoRoute. Setting to False may be useful if you want to see the live output and process of AutoRoute
-       
+    See documenation
         .. versionadded:: 0.1.0
 
 
@@ -752,84 +692,42 @@ def FloodSpreader(EXE: str, DEM: str, VDT: str, OutName: str, Database: bool = T
     --------
 
     """
-    _checkExistence([EXE, DEM, VDT])
-    if Database:
-        _checkExistence([COMIDFile])
+    with open(input_yml, 'r') as config_file:
+        config = yaml.safe_load(config_file)
+    inputs = list(config.keys())
+    MIFN = None
+    for key in inputs:
+        if key == 'Main_Input_File':
+            MIFN = config[key]
 
-    for isbool in [Database, UseARTW, OutDEP, OutFLD, OutVEL, OutWSE, DONTRUN, Silent]:
-        if not isinstance(isbool, bool):
-            raise ValueError(f'The value {isbool} is invalid. Please reenter the value as a boolean.')
+    if MIFN is None:
+        print(f"No main input file described for FloodSpreader, saving as 'mifn_FS.txt' in {os.getcwd()}...")
+        MIFN = 'mifn_FS.txt'
+
+    write_immediately = ['DEM_File','Print_VDT_Database','Comid_Flow_File','Print_VDT','FS_ADJUST_FLOW_BY_FRACTION',
+                         'BATHY_Out_File','FSOutBATHY','Bathy_LinearInterpolation','BathyTopWidthDistanceFactor',
+                         'TopWidthDistanceFactor','Flood_BadCells','FloodSpreader_Use_AR_Depths','FloodSpreader_SmoothWSE',
+                         'FloodSpreader_SmoothWSE_SearchDist','FloodSpreader_SmoothWSE_FractStDev',
+                         'FloodSpreader_SmoothWSE_RemoveHighThree','FloodSpreader_Use_AR_Depths_StDev',
+                         'FloodSpreader_SpecifyDepth','FloodSpreader_SpecifyDepth','FloodSpreader_Use_AR_TopWidth','OutDEP',
+                         'OutFLD','OutVEL','OutWSE']
+
+    with open(MIFN,'w') as MIF:
+        for key in inputs:
+            value = config[key]
+            if value is None or value is False:
+                continue
+            if key in write_immediately:
+                if value is True:
+                    _AR_Write(MIF, key, '')
+                else:
+                    _AR_Write(MIF, key, value)
+
+    if 'FloodSpreaderExe' in inputs:
+        return [config['FloodSpreaderExe'], MIFN]
     
-    for intorfloat in [AdjustFlow, TWDF, WSEStDev, SpecifiedDpth]:
-        if not isinstance(intorfloat, int) and not isinstance(intorfloat, float):
-            raise ValueError(f'The value {intorfloat} is invalid. Please reenter the value as an integer or float.')
-
-    for isint in [WSEDist]:
-        if not isinstance(isint, int):
-            raise ValueError(f'The value {isint} is invalid. Please reenter the value as an integer.')
-
-    if os.path.exists(MIFN):
-        mode = 'a'
-    else:
-        mode = 'w'
-    mode= 'w'
-
-    with open(MIFN, mode) as MIF:
-        # Required inputs
-        _AR_Write(MIF, "#FloodSpreader_Inputs", "")
-        _AR_Write(MIF, 'DEM_File', DEM)
-        if Database:
-            _AR_Write(MIF, 'Print_VDT_Database', VDT)
-            _AR_Write(MIF, 'Comid_Flow_File', COMIDFile)
-        else: 
-            _AR_Write(MIF, 'Print_VDT', VDT)
-
-        _AR_Write(MIF, '', '')
-
-        # Optional inputs
-        _AR_Write(MIF, 'FS_ADJUST_FLOW_BY_FRACTION', AdjustFlow)
-        if ARBathy:
-            _AR_Write(MIF, 'BATHY_Out_File', ARBathy)
-        if FSBathy:
-            _AR_Write(MIF, 'FSOutBATHY', FSBathy)
-        if Linear_Interp_Bathy:
-            _AR_Write(MIF, "Bathy_LinearInterpolation", "")
-        if Inverse_Bathy is not None:
-            _AR_Write(MIF, "BathyTopWidthDistanceFactor", Inverse_Bathy)
-        _AR_Write(MIF, 'TopWidthDistanceFactor', TWDF)
-        if AdjstFldDpthMthd == 1:
-            _AR_Write(MIF, 'Flood_BadCells', '')
-        elif AdjstFldDpthMthd == 2:
-            _AR_Write(MIF, 'FloodSpreader_Use_AR_Depths', '')
-        elif AdjstFldDpthMthd == 3:
-            _AR_Write(MIF, 'FloodSpreader_SmoothWSE', '')
-            _AR_Write(MIF, 'FloodSpreader_SmoothWSE_SearchDist', WSEDist)
-            _AR_Write(MIF, 'FloodSpreader_SmoothWSE_FractStDev', WSEStDev)
-            _AR_Write(MIF, 'FloodSpreader_SmoothWSE_RemoveHighThree', WSERmv3)
-        elif AdjstFldDpthMthd == 4:
-            _AR_Write(MIF, 'FloodSpreader_Use_AR_Depths_StDev', '')
-        elif AdjstFldDpthMthd == 5:
-            _AR_Write(MIF, 'FloodSpreader_SpecifyDepth', SpecifiedDpth)
-        if UseARTW:
-            _AR_Write(MIF, 'FloodSpreader_Use_AR_TopWidth', '')
-
-        # Outputs
-        if OutDEP:
-            _AR_Write(MIF, 'OutDEP', OutName)
-        if OutFLD:
-            _AR_Write(MIF, 'OutFLD', OutName)
-        if OutVEL:
-            _AR_Write(MIF, 'OutVEL', OutName)
-        if OutWSE:
-            _AR_Write(MIF, 'OutWSE', OutName)
-
-    try:
-        if Silent and not DONTRUN:
-            c = subprocess.call([EXE, MIFN], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
-        elif not DONTRUN:
-            c = subprocess.call([EXE, MIFN])
-    except Exception as e:
-        print(e)
+    return [MIFN]
+   
 
 def FloodSpreaderPy(DEMfile, VDT, OutName, Database=True, COMIDFile='', AdjustFlow=1, ARBathy='',FSBathy='', TWDF=1.5, WSEDist=10, 
                     WSEStDev=0.25, WSERmv3=False, SpecifiedDpth=10, JstStrmDpths = False, UseARTW=False, OutDEP=False, OutFLD = False, 

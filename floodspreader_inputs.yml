@@ -1,0 +1,32 @@
+---
+# FloodSpreader required inputs
+FloodSpreaderExe: "C:\\Users\\water\\Desktop\\WORK\\AutoRoute\\CODE_AutoRoute\\Permanent_Variables\\Executables\\AutoRoute_FloodSpreader.exe"
+DEM_File: "C:\\Users\\water\\Desktop\\WORK\\AutoRoute\\CODE_AutoRoute\\FloodMap_Locations\\United_States\\Utah\\Utah_Co\\Inputs\\Combined_DEM\\Combined_DEM.tif" 
+Print_VDT: ~
+Print_VDT_Database: "C:\\Users\\water\\Desktop\\WORK\\AutoRoute\\CODE_AutoRoute\\FloodMap_Locations\\United_States\\Utah\\Utah_Co\\Outputs\\Output_VDT\\Output_VDT.txt"
+
+# FloodSpreader optional inputs
+Comid_Flow_File: "C:\\Users\\water\\Desktop\\WORK\\AutoRoute\\CODE_AutoRoute\\FloodMap_Locations\\United_States\\Utah\\Utah_Co\\Inputs\\Statistical_FloodPredictions\\100yr_Flood.csv"
+FS_ADJUST_FLOW_BY_FRACTION: ~
+BATHY_Out_File: ~
+FSOutBATHY: ~
+FloodSpreader_SmoothWSE: false
+FloodSpreader_SmoothWSE_SearchDist: ~
+FloodSpreader_SmoothWSE_FractStDev: ~
+FloodSpreader_SmoothWSE_RemoveHighThree: false
+FloodSpreader_SpecifyDepth: ~
+TopWidthDistanceFactor: 1.5
+Flood_BadCells: false
+FloodSpreader_JustStrmDepths: false
+FloodSpreader_Use_AR_Depths: false
+FloodSpreader_Use_AR_Depths_StDev: false
+FloodSpreader_Use_AR_TopWidth: false
+
+# FloodSpreader Raster outputs
+OutDEP: ~
+OutFLD: 'C:\\Users\water\\Downloads\\test.tif'
+OutVEL: ~
+OutWSE: ~
+
+# Resulting main input file
+Main_Input_File: "C:\\Users\\water\\Downloads\\mifn_FS.txt"
