@@ -1,0 +1,83 @@
+---
+# AutoRoute required inputs
+AutoRouteExe: "C:\\Users\\water\\Desktop\\WORK\\AutoRoute\\CODE_AutoRoute\\Permanent_Variables\\Executables\\AutoRoute_w_GDAL.exe"
+DEM_File: "C:\\Users\\water\\Desktop\\WORK\\AutoRoute\\CODE_AutoRoute\\FloodMap_Locations\\United_States\\Utah\\Utah_Co\\Inputs\\Combined_DEM\\Combined_DEM.tif" 
+Stream_File: "C:\\Users\\water\\Desktop\\WORK\\AutoRoute\\CODE_AutoRoute\\FloodMap_Locations\\United_States\\Utah\\Utah_Co\\Inputs\\Rasterized_StrmFile\\Rasterized_StrmFile.tif"
+
+# AutoRoute optional inputs
+Spatial_Units: 'deg'
+X_Section_Dist: 2000
+Q_Limit: 1.024
+Use_Prev_D_4_XS: ~
+Man_n: ~
+LU_Raster: ~
+LU_Raster_SameRes: "C:\\Users\\water\\Desktop\\WORK\\AutoRoute\\CODE_AutoRoute\\FloodMap_Locations\\United_States\\Utah\\Utah_Co\\Inputs\\Reclassified_Landcover\\Reclassified_Landcover.tif"
+LU_Manning_n: "C:\\Users\\water\\Desktop\\WORK\\AutoRoute\\CODE_AutoRoute\\Permanent_Variables\\Manning's_N_Key.txt"
+Gen_Dir_Dist: 1
+Gen_Slope_Dist: 3
+Weight_Angles: ~
+Dist_X_PastWE: ~
+Str_Limit_Val: ~
+UP_Str_Limit_Val: ~ 
+Degree_Manip: 6.5
+Degree_Interval: 3
+Low_Spot_Range: 2
+Low_Spot_Dist_m: ~
+Low_Spot_Range_Box: ~
+Low_Spot_Range_Box_Size: ~
+Low_Spot_Find_Flat: ~
+Low_Spot_Range_FlowCutoff: ~
+Print_VDT_Database_NumIterations: ~
+Flow_RAPIDFile: "C:\\Users\\water\\Desktop\\WORK\\AutoRoute\\CODE_AutoRoute\\FloodMap_Locations\\United_States\\Utah\\Utah_Co\\Outputs\\Rapid_flow\\Rapid_flow.txt"
+RAPID_Flow_ID: "TDXHydroLi"
+RAPID_Flow_Param: 'Max'
+RAPID_BaseFlow_Param: ~
+RAPID_Subtract_BaseFlow: false
+RowCol_From_RAPIDFile: true
+Bathymetry: false
+Bathymetry_Alpha: ~
+Layer_Row_Start: ~
+Layer_Row_End: ~
+UNIFORM_FLOW: ~
+PROPORTIONAL_FLOW: ~
+EXPONENTIAL_FLOW: ~
+EXPON_PRECIP_FLOW: ~
+LOG10_REGRESS_FLOW: ~
+ADJUST_FLOW_BY_FRACTION: ~
+Flow_Alpha: ~
+Flow_Beta: ~
+Flow_Gamma: ~
+Flow_Prec_Const: ~
+Flow_Prec_Exp: ~
+
+# AutoRoute unit conversions
+CONVERT_DA_TO_SQFT: false
+CONVERT_DA_TO_ACRE: false
+CONVERT_DA_TO_SQMI: false
+CONVERT_Q_CFS_TO_CMS: false
+STR_IS_M2: ~
+
+# AutoRoute raster outputs
+Print_Rasters_With_ShortTW: False
+SHP_Out_File: ~
+DEP_Out_File: ~
+DEP_Out_Only_On_Streams: ~
+Print_Strm_Mask: ~
+Print_Strm_Mask_ID: ~
+BATHY_Out_File: ~
+
+# AutoRoute point outputs
+Print_Flood_Pnts: ~
+Print_Depth_Pnts: ~
+Print_Bathy_Pnts: ~
+Pnts_Just_3: false
+
+# AutoRoute text outputs
+Print_XSections: False
+XSections_FileName: ~
+Meta_File: ~
+Print_VDT: ~
+Print_VDT_Database: "C:\\Users\\water\\Desktop\\WORK\\AutoRoute\\CODE_AutoRoute\\FloodMap_Locations\\United_States\\Utah\\Utah_Co\\Outputs\\Output_VDT\\Output_VDT.txt"
+
+# Resulting main input file
+Main_Input_File: "C:\\Users\\water\\Downloads\\mifn.txt"
