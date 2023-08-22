@@ -1,21 +1,15 @@
-"""
-main.py
-AutoRoute
-"""
-
 import os
-os.environ['USE_PYGEOS'] = '0'
-os.environ['PROJ_LIB'] = "C:\\Users\\lrr43\\.conda\\envs\\gdal\\Library\\share\\proj"
-os.environ['GDAL_DATA'] = "C:\\Users\\lrr43\\.conda\\envs\\gdal\\Library\\share"
 import subprocess
 import re
+import time
+import concurrent.futures
+
+import yaml
+import difflib
 import numpy as np
 import pandas as pd
-import concurrent.futures
-from datetime import datetime
-import time
 import geopandas as gpd
-from shapely.geometry import MultiLineString
+from scipy import stats
 
 try:
     import gdal
@@ -23,10 +17,12 @@ try:
     import osr
     from gdalconst import GA_ReadOnly
 except:
-	from osgeo import gdal, ogr, osr
-	from osgeo.gdalconst import GA_ReadOnly
+    from osgeo import gdal
+    from osgeo import gdal, ogr, osr
+    from osgeo.gdalconst import GA_ReadOnly
 
 gdal.UseExceptions()
+gdal.SetConfigOption('GDAL_NUM_THREADS', 'ALL_CPUS')
 
 def Preprocess(dem_folder: str, lu_folder: str, streams: str, flowfile_to_sim: str, temp_folder: str, 
                extent: tuple or list = None, clip: str = None, reach_id: str = 'LINKNO', 
@@ -45,7 +41,6 @@ def Preprocess(dem_folder: str, lu_folder: str, streams: str, flowfile_to_sim: s
     os.makedirs(out_rapid, exist_ok=True)
 
     DEM_Parser(dem_folder, out_dem, extent, clip)
-
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         # Submit the functions to the executor
         future1 = executor.submit(LU_Parser, lu_folder, out_dem, out_lu, reclassify_dict)
@@ -99,25 +94,38 @@ def PrepareLU(dem_file_path: str, land_file_path: str or list, out_path: str, no
         raise ValueError(f"I dont't know what to do with land file path of type {type(land_file_path)}")
 
     # Check if the projection is EPSG:4326 (WGS84)
-    if '["EPSG","4326"]' not in projection:
-        # Reproject all GeoTIFFs to EPSG:4326
-        projection = osr.SpatialReference()
-        projection.ImportFromEPSG(4326)
+    # if '["EPSG","4326"]' not in projection:
+    #     # Reproject all GeoTIFFs to EPSG:4326
+    #     projection = osr.SpatialReference()
+    #     projection.ImportFromEPSG(4326)
 
     # Create an in-memory VRT (Virtual Dataset) for merging the GeoTIFFs
     vrt_options = gdal.BuildVRTOptions(resampleAlg='nearest')
     vrt_dataset = gdal.BuildVRT('', [tiff_file for tiff_file in tiff_files], options=vrt_options)
-    options = gdal.WarpOptions(outputType=gdal.GDT_UInt16, width=ncols, height=nrows, outputBounds=(minx, miny, maxx, maxy), 
-                                dstSRS=projection, resampleAlg=gdal.GRA_NearestNeighbour, format='VRT')
+
+    # options = gdal.TranslateOptions(
+    #     outputType=gdal.GDT_Byte,
+    #     width=ncols,
+    #     height=nrows,
+    #     outputBounds=(minx, miny, maxx, maxy),
+    #     outputSRS=projection,
+    #     resampleAlg=gdal.GRA_NearestNeighbour,
+    #     format='VRT'
+    # )
+
+    # final_dataset = gdal.Translate('', vrt_dataset, options=options)
+    options = gdal.WarpOptions(outputType=gdal.GDT_Byte, width=ncols, height=nrows, outputBounds=(minx, miny, maxx, maxy), 
+                                dstSRS=projection, resampleAlg=gdal.GRA_NearestNeighbour, format='VRT', multithread=True,
+                                creationOptions = ["COMPRESS=ZSTD", "PREDICTOR=2","BIGTIFF=YES"])
     final_dataset = gdal.Warp('', vrt_dataset, options=options) 
 
     hDriver = gdal.GetDriverByName("GTiff")
-    out_file = hDriver.Create(out_path, xsize=ncols, ysize=nrows, bands=1, eType=gdal.GDT_UInt16)
+    out_file = hDriver.Create(out_path, xsize=ncols, ysize=nrows, bands=1, eType=gdal.GDT_Byte)
     out_file.SetGeoTransform(final_dataset.GetGeoTransform())
     out_file.SetProjection(projection)
 
     print("Writing out array... ", end='')
-    block_size = 8192
+    block_size = 30000
     # Process the array in blocks
     for y in range(0, nrows, block_size):
         for x in range(0, ncols, block_size):
@@ -190,6 +198,7 @@ def PrepareDEM(dem, output: str, extent = None, clip = None):
                       vrt_geo[3]  # ymax
                       ]
     
+    warp=True
     if extent is not None:
         # assert (extent[0] > dataset_extent[0] and extent[1] > dataset_extent[1] and
         # extent[2] < dataset_extent[2] and extent[3] < dataset_extent[3]), f"You have specified an extent that is not entirely within the dataset!!\n{dataset_extent}"
@@ -204,32 +213,58 @@ def PrepareDEM(dem, output: str, extent = None, clip = None):
                 extent[i] = e2
             i += 1
 
-        warp_options = gdal.WarpOptions(format='GTiff', dstSRS=projection, dstNodata=0, outputBounds=extent)
+        warp=False
+        translate_options = gdal.TranslateOptions(
+            format='GTiff',
+            outputSRS=projection,
+            noData=-9999,
+            outputBounds=extent,
+            outputType=gdal.GDT_Float32, 
+            multithread=True, 
+            creationOptions = ["COMPRESS=ZSTD", "PREDICTOR=3","BIGTIFF=YES"]
+            )          
     elif clip is not None:
         shp = ogr.Open(clip)
         layer = shp.GetLayer()
-        shp_extent = layer.GetExtent()
+        #shp_extent = layer.GetExtent()
 
         # assert (shp_extent[0] > dataset_extent[0] and shp_extent[1] > dataset_extent[1] and
         # shp_extent[2] < dataset_extent[2] and shp_extent[3] < dataset_extent[3]), "You are trying to clip something that is not entirely within the dataset!!"
 
         name = layer.GetName()
         shp = None
-        warp_options = gdal.WarpOptions(format='GTiff', dstSRS=projection, dstNodata=0, cutlineDSName=clip, cutlineLayer=name, cropToCutline=True)
+        warp_options = gdal.WarpOptions(
+            format='GTiff', 
+            dstSRS=projection, 
+            dstNodata=-9999,
+            utlineDSName=clip, 
+            cutlineLayer=name, 
+            cropToCutline=True, 
+            outputType=gdal.GDT_Float32, 
+            multithread=True, 
+            creationOptions = ["COMPRESS=ZSTD", "PREDICTOR=3","BIGTIFF=YES"])
     else:
-        warp_options = gdal.WarpOptions(format='GTiff', dstSRS=projection, dstNodata=0)
+        warp_options = gdal.WarpOptions(
+            format='GTiff', 
+            dstSRS=projection, 
+            dstNodata=-9999, 
+            outputType=gdal.GDT_Float32, 
+            multithread=True, 
+            creationOptions = ["COMPRESS=ZSTD", "PREDICTOR=3","BIGTIFF=YES"])
 
     print(f'Writing {output}... ', end='')
     try:
-        gdal.Warp(output, vrt_dataset, options=warp_options)
+        if warp:
+            gdal.Warp(output, vrt_dataset, options=warp_options)
+        else:
+            gdal.Translate(output, vrt_dataset, options=translate_options)
+        print('finished')
     except RuntimeError as e:
         try:
             disk, required = re.findall(r"(\d+)", str(e))
             raise MemoryError(f"Need {_sizeof_fmt(int(required))}; {_sizeof_fmt(int(disk))} of space on this machine")
         except:
             print(e)
-
-    print('finished')
 
     # Clean up the VRT dataset
     vrt_dataset = None
@@ -244,18 +279,20 @@ def DEM_Parser(folder: str, output: str, extent: tuple or list = None, clip: str
         raise NotImplementedError
     if extent is not None and len(extent) != 4:
         raise ValueError(f'Invalid extent: {extent}')
+    else:
+        minx1, miny1, maxx1, maxy1 = extent
     if clip is not None:
         if not os.path.exists(clip):
             raise ValueError(f'Clip does not exist: {clip}')
         shp = ogr.Open(clip)
         layer = shp.GetLayer()
         extent = layer.GetExtent()
+        minx1, maxx1, miny1, maxy1 = extent
 
     sub_folders = [os.path.join(folder, f) for f in os.listdir(folder) if os.path.isdir(os.path.join(folder,f))]
     folders_to_inspect = []
     for folder in sub_folders:
         folder_extent = [int(x[1:]) if x[0] in 'NE' else -int(x[1:]) for x in re.findall(pattern, folder)[0]]
-        minx1, miny1, maxx1, maxy1 = extent
         miny2, minx2, maxy2, maxx2 = folder_extent
         if (minx1 <= maxx2 and maxx1 >= minx2 and miny1 <= maxy2 and maxy1 >= miny2):
             folders_to_inspect.append(folder)
@@ -268,7 +305,6 @@ def DEM_Parser(folder: str, output: str, extent: tuple or list = None, clip: str
             file_extent = [int(x[1:]) if x[0] in 'NE' else -int(x[1:]) for x in re.findall(file_pattern, file)[0]]
             file_extent.reverse()
             file_extent += [file_extent[0] + 1, file_extent[1] + 1]
-            minx1, miny1, maxx1, maxy1 = extent
             minx2, miny2, maxx2, maxy2 = file_extent
             if (minx1 <= maxx2 and maxx1 >= minx2 and miny1 <= maxy2 and maxy1 >= miny2):
                 files.append(os.path.join(folder,file))
@@ -278,7 +314,6 @@ def DEM_Parser(folder: str, output: str, extent: tuple or list = None, clip: str
     elif len(files) == 1:
         return files[0]
     elif clip == None:
-        print(files)
         PrepareDEM(files, output, extent)
     else:
         PrepareDEM(files, output, clip=clip)
@@ -287,19 +322,26 @@ def DEM_Parser(folder: str, output: str, extent: tuple or list = None, clip: str
 def LU_Parser(folder: str, dem: str, output: str, reclassify: dict = None,  
               pattern: str = r"(\w\d{3})(\w\d{2}).+\.tif"):
     minx1, miny1, maxx1, maxy1, _, _, ncols, nrows, _, projection = _Get_Raster_Details(dem)
+    if miny1 > maxy1:
+        maxy1, miny1 = miny1, maxy1
+    if minx1 > maxx1:
+        maxx1, minx1 = minx1, maxx1
+
     files = []
 
     for file in os.listdir(folder):
+        if 'E020' in file:
+            x=1
         file_extent = [int(x[1:]) if x[0] in 'NE' else -int(x[1:]) for x in re.findall(pattern, file)[0]]
         file_extent[1] -= 20
         file_extent += [file_extent[0]+20, file_extent[1]+20]
         minx2, miny2, maxx2, maxy2 = file_extent
-        if (minx1 <= maxx2 and maxx1 >= minx2 and miny1 <= maxy2 and maxy1 >= miny2):
+        if minx1 <= maxx2 and maxx1 >= minx2 and miny1 <= maxy2 and maxy1 >= miny2:
             files.append(os.path.join(folder,file))
 
     if len(files) == 0:
         raise ValueError("No files found that are in the extent. Check the extent, filenames, and the patterns!")
-    PrepareLU(dem,files,output, reclassify)
+    PrepareLU(dem,files,output,reclassify)
     
 def _Get_Raster_Details(raster_file: str):
     """
@@ -309,11 +351,11 @@ def _Get_Raster_Details(raster_file: str):
     try:
         projection = data.GetProjection()
     except RuntimeError as e:
+        print(e)
         print("Consider adding this to the top of your python script, with your paths:")
-        print('os.environ[\'PROJ_LIB\'] = "C:\\Users\\USERNAME\\.conda\\envs\\gdal\\Library\\share\\proj\nos.environ[\'GDAL_DATA\'] = "C:\\Users\\USERNAME\\.conda\\envs\\gdal\\Library\\share"')
-        raise WindowsError(e)
+        print('os.environ[\'PROJ_LIB\'] = "C:\\Users\\USERNAME\\.conda\\envs\\gdal\\Library\\share\\proj \
+            os.environ[\'GDAL_DATA\'] = "C:\\Users\\USERNAME\\.conda\\envs\\gdal\\Library\\share"')
         
-
     geoTransform = data.GetGeoTransform()
     ncols = int(data.RasterXSize)
     nrows = int(data.RasterYSize)
@@ -343,9 +385,9 @@ def PrepareStream(dem_file_path: str, shapefile: str, out_path: str, field: str 
     Parameters
     ----------
     dem_file_path : string, os.path object
-        Path to DEM file, or a folder containing a DEM file,
+        Path to DEM file, or a folder containing a DEM file
     shapefile : string, os.path object
-        Path to stream shapefile, a list of such, a folder containing one .shp or .gpkg file
+        Path to stream shapefile
     out_path : string, os.path object
         Path, including name and file extension, of the output
     field : string, optional
@@ -367,57 +409,20 @@ def PrepareStream(dem_file_path: str, shapefile: str, out_path: str, field: str 
 
     """
 
-    if isinstance(shapefile, (list, tuple)):
-        shapefiles = shapefile
-    elif isinstance(shapefile, str):
-        if os.path.isdir(shapefile):
-            shapefiles = [os.path.join(shapefile, file) for file in os.listdir(shapefile) if file.endswith(('.gpkg','.shp'))]
-        elif shapefile.endswith(('.gpkg','.shp')):
-            shapefiles = [shapefile]
-        else:
-            raise ValueError("Bad shapefile path")
-    else:
-        raise ValueError(f"Invalid type for shapefile: {type(shapefile)}")
+    _checkExistence([dem_file_path, shapefile])
+    try:
+        (minx, miny, maxx, maxy, _, _, ncols, nrows, _, projection) = _Get_Raster_Details(dem_file_path)
+    except:
+        print("Int failed, retrying")
+        (minx, miny, maxx, maxy, _, _, ncols, nrows, _, projection) = _Get_Raster_Details(dem_file_path)
 
-    (minx, miny, maxx, maxy, _, _, ncols, nrows, geo, proj) = _Get_Raster_Details(dem_file_path)
+    LayerName = os.path.basename(shapefile).split('.')[-2]
 
-    if len(shapefiles) == 1:
-        LayerName = os.path.basename(shapefiles[0]).split('.')[-2]
-
-        options = gdal.RasterizeOptions(noData=0, outputType=gdal.GDT_UInt32, attribute=field, width=ncols, height=nrows, 
-                                        outputBounds=(minx, miny, maxx, maxy), layers=LayerName)
-        gdal.Rasterize(out_path, shapefile, options=options)
-
-    # Create a new memory-based raster dataset to hold the combined result
-    #output_dataset = gdal.GetDriverByName('MEM').Create('', ncols, nrows, len(shapefiles), gdal.GDT_UInt32)
-    driver = ogr.GetDriverByName("Memory")
-    out_ds = driver.CreateDataSource("")
-    out_layer = out_ds.CreateLayer("", None, ogr.wkbLineString)
-    projection = osr.SpatialReference()
-    projection.ImportFromEPSG(4326)
-
-    input_ds = ogr.Open(shapefiles[0])
-    input_layer = input_ds.GetLayer()
-
-    # Copy field definitions
-    for i in range(input_layer.GetLayerDefn().GetFieldCount()):
-        field_def = input_layer.GetLayerDefn().GetFieldDefn(i)
-        out_layer.CreateField(field_def)
-
-    input_ds = None
-
-    # Copy features from all input shapefiles to the output shapefile
-    for shapefile in shapefiles:
-        input_ds = ogr.Open(shapefile)
-        input_layer = input_ds.GetLayer()
-        
-        for feature in input_layer:
-            out_layer.CreateFeature(feature.Clone())
-
-        input_ds = None  # Close the input shapefile
-
-    # out_ds.SetProjection(projection)
-    # out_ds.SetGeoTransform(geo)
+    options = gdal.RasterizeOptions(noData=0, outputType=gdal.GDT_UInt32, attribute=field, width=ncols, height=nrows, 
+                                    outputBounds=(minx, miny, maxx, maxy), layers=LayerName,
+                                    outputSRS=projection,
+                                    creationOptions = ["COMPRESS=ZSTD", "PREDICTOR=2","BIGTIFF=YES"])
+    gdal.Rasterize(out_path, shapefile, options=options)
 
 def _checkExistence(paths_to_check: list) -> None:
     for path in paths_to_check:
@@ -430,7 +435,7 @@ def _returnBasename(path: str) -> str:
     head, tail = os.path.split(path)
     return tail or os.path.basename(head)
 
-def _sizeof_fmt(num: int) -> str:
+def _sizeof_fmt(num:int) -> str:
     """
     Take in an int number of bytes, outputs a string that is human readable
     """
@@ -584,187 +589,18 @@ def MakeRAPIDFile(mainfile: str, stream_raster: str, out_path: str, flows: str o
     )
 
     data = None
+    print("Finished stream file")
 
-def AutoRoute(EXE: str, DEM: str, stream: str, RAPID: str, LandUseSameRes: str, out_path: str, Mannings: str, RAPIDflow: str, 
-              Spatial_Units: str = 'deg', X_distance: int = 2000, Q: float = 1.024, Prev_D: int = 1, Man_n = None, 
-              LandUseDiffRes: bool = False, Dir_dist: int = 1, Slope_dist: int = 11, Weight_angles:int = 0, 
-              Dist_past_WE: int = 0, Stream_lower_limit: float = 0,Stream_upper_limit: float = 1000000000000000, 
-              Degree_manip: float = 6.5, Degree_interval: float = 2.1, LowSpotRange: int = 2, LowSpotRangeM: float = 0, 
-              LowSpotBox: bool = False, LowSpotBoxSize: int = 1, LowSpotFindFlat: bool = False, FindFlatCutoff: float = float('inf'), 
-              Database: bool = True, DatabaseIts: int = 15, RAPIDid: str = 'reach_id', RAPIDbaseflow: str = '', 
-              Rapid_da_flow: str = "", Bathy_mthd: int = 0, Bathy_max_depth: float = 0.2, Bathy_y_Shallow: float = 0.2, 
-              Bathy_side_slope: float = 2.0,
-              SubtractBaseflow: bool = False, RowColFromRAPID: bool = True, Bathy: bool = False, BathyAlpha: float = None,
-              StartRow: int = 0, EndRow=None, AdjustFlow: float = 1, Uniform: bool = False, Proportional: bool = False, 
-              Exponential: bool = False, ExPrecip: bool = False, Log10: bool = False, FlowAlpha: float = 1, FlowBeta: float = 0.1, 
-              FlowGamma: float = 1, PrecipConst: float = 0.2, PrecipExp: float = 0.2, SQFT: bool = False, ACRE: bool = False, 
-              SQMI: bool = False, CMS: bool = False, M2: bool = None, UseShortTW: bool = False, StrmMask: bool = None, 
-              StrmMaskID: str = '', BathyOut: str = '', FloodPoints: str = '', DepthPoints: str = '', BathyPoints: str = '', 
-              PointsJust3: bool = False, XSection: str = '', Metafile: str = datetime.now().strftime("%Y-%d-%m_%H-%M-%S") + ".txt", 
-              DONTRUN: bool = False, MIFN: str = 'tempMIF.txt', Silent: bool = True):
+def AutoRoute(input_yml: str) -> list:
     """
     Make a VDT file with AutoRoute executable. Most parameters are the suggested default values.
 
-    Returns nothing, but creates the VDT file
+    Returns a list to be passed in subprocess.call() or if AutoRouteExe is not specified in the yaml, a lsit containing the 
+    path to the main input file created
 
     Parameters
     ----------
-    EXE : string
-        Path to the AutoRoute Executable
-    DEM : string
-        Digital elevation model. The raster can be projected or geographic, but the elevation values must be in meters.
-    stream_raster : string
-        Stream raster made in a preprocessing step. Tells AutoRoute what stream raster to use.
-    RAPID : string
-        Input text file that specifies for each stream cell the row, col, HydroID (or similar COMID, etc.), and flow rates.  In the file you can specify several flow rates for each stream cell.  The Flow_File is tab- or space-separated and is typically created in a preprocessing step.  An example Flow_File is shown below:
-    LandUseSameRes : string
-        Land Use raster that has a spatial resolution and spatial extent the EXACT SAME as the DEM and Stream Raster files.  The values of the land use raster must be integer.
-    Out_path : string
-        If Database is True, Output file that for each stream cell it prints the stream identifier (COMID, HydroID, etc.), row, col, elevation, baseflow, and for several flow rates the flow, velocity, top-width, and water surface elevation associated.  This output file is used as the database file when using FloodSpreader. Otherwise, Output file that for each stream cell it prints the stream identifier (COMID, HydroID, etc.), row, col, flow, velocity, depth, top-width, elevation, and water surface elevation.  This output file is used as an input for FloodSpreader.
-    Mannings : string
-        .txt file table that corresponds a land use type to a Mannings n value. Each cell within the model is assigned a Mannings n value. The description should have NO SPACES OR TABS
-    RAPIDflow : string
-        Specifies the flow rates that AutoRoute uses.  The text (String) must be present as a column heading in the Flow_RAPIDFile file.
-    Spatial_Units : string
-        Spatial units of the x- and y- coordinates in the input rasters. The only options are “km”, “m”, and “deg.” If “deg” is specified then Latitude must also be defined in AutoRoute versions prior to AutoRoute Version 2.0, but this is not supported in this python package
-    X_distance : int, float
-        This is the distance (meters) from the stream cell that will be sampled from the DEM to create a cross-section profile. A value of 100 would indicate that 200 meters would be sampled (100 meters on each side of the stream cell). Higher values are needed for wide rivers, but with these larger values also comes computational burden. It is really up the modeler to balance the need for sampling wide cross sections with the computational cost.
-    Q : int, float
-        AutoRoute uses an iterative method to calculate the flow depth at each cross-section. The flow depth is iteratively increased until the calculated flow rate (Qcalc) is similar to the flow rate assigned to the stream cell (Qassigned). The cross-section is not used if Qcalc > Q_Limit * Qassigned Default value for Q_Limit is 1.1.  This means that if the Qcalc is 10% higher than Qassigned the cross-section is thrown out.  Some detail is provided in Follum et al. (2020), but in that paper Q_Limit is set to 1.01, which would throw out more cross-sections.
-    Prev_D : int
-        The value is either 0 or 1. If this card is specified with a value of 1 and a cross-section is going to be thrown out because Qcalc > Q_Limit * Qassigned, , the previous depth value (which didn’t violate the Q_Limit criteria) is used for the cross-section.  However, Qcalc could be less (significantly less sometimes) than Qassigned. This option should almost always be used and therefore the default value is now set to 1.
-    Man_n : NoneType, int, float
-        Specifies the Mannings n value for the entire model. This is overwritten if a Land Use raster is defined and a Mannings n table is utilized (see LU_Manning_n and LU_Raster or LU_Raster_SameRes)
-    LandUseDiffRes : bool
-        Indicates that the land Use raster has a spatial resolution and spatial extent greater than the DEM or Stream raster files. This option was included because land use rasters are typically 30m resolution and DEM rasters are typically 10m resolution.  It also allows the modeler to use a single land use raster when simulating a large area that is made-up of several DEM rasters.
-    Dir_dist : int
-        This is the number of cells upstream and downstream the model will search to calculate the stream direction for each stream cell. The cross-sections are sampled from angles perpendicular to the stream direction. Based on sinuosity of the rivers, this is really up to the modeler to determine the appropriate value. Default value is 1, but is often set to 10 depending on the model application.
-    Slope_dist : int
-        This is the number of cells upstream and downstream the model will search to calculate the stream slope for each stream cell. This is really up to the modeler to determine the appropriate value.
-    Weight_angles : int, float
-        For calculating slope and stream direction it was thought at one time the stream cells farther upstream/downstream from the stream cell of interest should carry a different weight than those that are closer. A value greater than 0 would increase the weight of cells farther from the stream cell of interest. Default value is 0, which would apply no weight based on distance from the cell. This has not been shown to be all that useful and should likely not be used.
-    Dist_past_WE : int
-        When printing out cross-section ordinates this value indicates how many ordinates past the water edge you want printed out with the cross-section. This was mainly used to provide ingress/egress information for mobility modeling. Default value is 0. When used it was typically set to 4.
-    Stream_lower_limit : int, float
-        Any stream cell with a stream raster value below this specified value is omitted (no cross-section sampled nor flood depth calculated) This is useful in omitting certain stream reaches. Also useful when simulating flows when the input stream raster is a flow accumulation raster (only cells that have a value greater than Str_Limit_Val are simulated). Default value is 0.0
-    Stream_upper_limit : int, float
-        Any stream cell with a stream raster value above this specified value is omitted (no cross-section sampled nor flood depth calculated) This is useful in omitting certain stream reaches. Also useful when simulating flows when the input stream raster is a flow accumulation raster (only cells that have a value less than UP_Str_Limit_Val are simulated). Default value is near infinity
-    Degree_manip : float
-        Degree Manip and Degree_Interval are both inputs that are followed by a floating point that represents an angle in degrees.  Both inputs are required for model to sample additional cross-sections at each stream cell. Degree Manip in conjunction with Degree_Interval are used for two reasons: 1.) Attempt to more accurately capture a cross-section perpendicular to the stream direction and 2.) Fill in the flood inundation map from AutoRoute (this is no longer necessary with FloodSpreader). As described in Follum et al. (2007), AutoRoute samples an initial cross-section.  Around sharp bends of the stream, a single perpendicular cross section may not adequately capture the floodplain geometry. Therefore, additional cross sections are developed by incrementally pivoting the cross-sectional orientation relative to the stream direction.  As shown in the figure below, Degree_Manip is the maximum angle (in degrees) that the cross-sections will pivot to either side of the original cross-section.  Degree_Interval (in degrees) specifies the incremental pivots about the original cross-section.
-    Degree_interval : float
-        See Degree_manip.
-    LowSpotRange : int
-        Tells AutoRoute to search for a low-spot in the cross-section profile.  The value associated with the parameter is the number of ordinates laterally along the cross-section searched to find the lowest point within the cross-section.  This parameter is often needed because the specified stream cell location is not always the lowest point within the cross-section.  The user needs to be aware as to not make this value too large because it is possible a low spot outside of the river channel could be found if the search distance is too large. If several cells have the lowest elevation analyzed, the cell closest to the modeled stream line is utilized. The default value is 2
-    LowSpotRangeM : int, float
-        Tells AutoRoute to search for a low-spot in the cross-section profile.  The value associated with the parameter is the distance laterally along the cross-section searched to find the lowest point within the cross-section.  This parameter is often needed because the specified stream cell location is not always the lowest point within the cross-section.  The user needs to be aware as to not make this value too large because it is possible a low spot outside of the river channel could be found if the search distance is too large. If several cells have the lowest elevation analyzed, the cell closest to the modeled stream line is utilized. The default value is 0.0.  If both Low_Spot_Range and Low_Spot_Dist_m are specified, the model will use Low_Spot_Dist_m.
-    LowSpotBox : bool
-        When “Low_Spot_Range_Box” is specified, the AutoRoute model samples a cross-section perpendicular to the stream direction.  The model then proceeds to move along each ordinate analyzing the ordinate elevation as well as the elevations of surrounding cells.  The number of ordinates analyzed is still defined by the “Low_Spot_Range” or “Low_Spot_Dist_m” input cards. Several elevation cells at each ordinate are analyzed instead of the interpolated ordinate elevations within the cross-section.  The interpolated ordinate elevations can mask the low-spots of the river, therefore the elevation cells of several cells surrounding the ordinate are analyzed.  The number of cells analyzed at each ordinate is defined using the “Low_Spot_Range_Box_Size” input card followed by an integer.  The default number is 1.  When using the “Low_Spot_Range_Box” input card the stream cell is moved to a lower-elevation cell once, and then various cross-sections are sampled from the new stream location.  This was done because the purpose of the multiple cross-sections was to better align a perpendicular cross-section from a known stream location, not to find the stream location itself.  The updated method better serves this purpose. If several cells have the lowest elevation analyzed, the cell closest to the modeled stream line is utilized.
-    LowSpotBoxSize : int
-        The number of cells analyzed at each ordinate when using “Low_Spot_Range_Box” is defined using the “Low_Spot_Range_Box_Size” input card followed by an integer.  The default number is 1, which would search the closest elevation cell to the ordinate and all the immediately surrounding cells in a square pattern.  If “Low_Spot_Range_Box_Size” is set to 1, 9 elevation cells are analyzed.  If “Low_Spot_Range_Box_Size” is set to 2, 25 elevation cells are analyzed.  If “Low_Spot_Range_Box_Size” is set to 3, 49 elevation cells are analyzed.
-    LowSpotFindFlat : bool
-        In many elevation datasets the elevations of large rivers are “burned-in”, giving them uniform elevations. The rivers may not have the lowest elevation within the cross-section profile, but they can be identified because they have a constant elevation.  The “Low_Spot_Find_Flat” input card was added to AutoRoute to help identify the centerline of larger rivers.  This feature only works when a stream line has a flow rate greater than a user-specified flow rate (“Low_Spot_Range_FlowCutoff”) which allows only larger rivers to implement the “Low_Spot_Find_Flat” method.  In the “Low_Spot_Find_Flat” method a cross-section is sampled and the model analyzes the 20 closest ordinates to the modeled centerline.  If several of the ordinates have the same elevation it is assumed this area of “flat” cells is a river and the centerline is moved to the center of these flat cells
-    FindFlatCutoff : float
-        The FindFlatCutoff input card with associated float value define the flow rate at which the “Low_Spot_Find_Flat” method can be used.  Typically, only larger rivers should utilize this option.  Therefore, the default value is near infinity.
-    Database : bool
-        See Out_path
-    DatabaseIts : int
-        When using the “Print_VDT_Database” option the AutoRoute model is simulating several flow rates and recording the information in an output VDT database file.  This input card allows the user to define how many flow iterations are simulated.  The default value is 15.
-    RAPIDid : string
-        Specifies the stream identifier that AutoRoute uses.  The text must be present as a column heading in the Flow_RAPIDFile file.  
-    RAPIDbaseflow : string
-        Specifies the base flow rates that AutoRoute uses.  The text (String) must be present as a column heading in the Flow_RAPIDFile file.   
-    Rapid_da_flow: string, optional
-        o	Highly recommended when using left bank- or right bank quadratic bathymetric profile.
-        o	This card helps AutoRoute know the left bank and the right bank of a stream.  This allows for constant bathymetric profiles, especially when using a left bank quadratic or right bank quadratic bathymetric profile.
-        o	The text (String) must be present as a column heading in the Flow_RAPIDFile file.
-    Bathy_mthd: int, optional
-        o	0 indicates the default parabolic bathymetric shape described in Follum et al. (2020).
-        o	1 indicates Left Bank Quadratic
-        o	2 indicates Right Bank Quadratic
-        o	3 indicates Double Quadratic
-        o	4 indicates Trapezoidal
-        o	5 indicates Triangle
-    Bathy_max_depth: float, optional
-        o	The value associated with Bathymetry_XMaxDepth tells the model what percentage of the top width from the bank that the lowest elevation of the bathymetry profile begins (see figure below).
-        o	Applies to trapezoidal, left bank quadratic, right bank quadratic, and double quadratic bathymetric profiles.
-    Bathy_y_Shallow: float, optional
-        o	The shallow portion of the bathymetric profile is calculated as the maximum depth times the value associated with Bathymetry_YShallow (see figure below).
-        o	Applies to left bank quadratic, right bank quadratic, and double quadratic bathymetric profiles.
-    Bathy_side_slope
-        o	The value associated with Bathymetry_SideSlope is the side slope of the initial estimate of the trapezoidal bathymetric profile. However, the method AutoRoute uses to calculate the bathymetric profile cannot preserve the side slopes, therefore this option should not be used to control the final shape of the bathymetric profile.  The use of “Bathymetry_XMaxDepth” is a better way to control the final shape of the trapezoidal bathymetric profile.
-
-    SubtractBaseflow : bool, optional
-        Tells the AutoRoute model to account for baseflow by subtracting the baseflow rate from the target flow rate.  These flow rates are defined using RAPID_BaseFlow_Param and RAPID_Flow_Param. RAPID_Flow_ID, RAPID_Flow_Param, and RAPID_BaseFlow_Param must all be defined. The other option to account for bathymetry is to use the Bathymetry input card.  When both RAPID_Subtract_BaseFlow and Bathymetry are specified in the input file the model will default to using RAPID_Subtract_BaseFlow.     
-    RowColFromRAPID : bool, optional
-        The row and column for each stream cell is defined within the Flow_RAPIDFile file by the Row and Col headings.  If this card is not present then the model will use the Stream_File to define the row and column of each stream cell.
-    Bathy : bool, optional
-        Tells AutoRoute to estimate channel bathymetry using a power function.  The method is described in Follum et al. (2020)
-    BathyAlpha : float, optional
-        Allows the user to manually specify ẟ in the bathymetry power function (see description under Bathymetry).  Default ẟ value is 0.001.
-    StartRow : int, optional
-        This card specifies the row where the AutoRoute model will start sampling cross-sections and simulating flood events.  This option was implemented to save computational time by only simulating a smaller zone.  The default value is 0.
-    EndRow : NoneType, int, optional
-        This card specifies the row where the AutoRoute model will stop sampling cross-sections and simulating flood events.  This option was implemented to save computational time by only simulating a smaller zone.  The default value is set to the total number of rows.
-    AdjustFlow : int, float, optional
-        The flow rate that is inputted or calculated is simply multiplied by the specified ADJUST_FLOW_BY_FRACTION value.  If the Calculated flow value for a given cell is 50.2 cms and  ADJUST_FLOW_BY_FRACTION is set to 0.75, then the model will try to simulate a flow rate of 37.65 cms.
-    Uniform : bool, optional
-        Flag where flow (Q, cms) is set constant: Q = Flow_Alpha
-    Proportional : bool, optional
-        Flag where flow (Q, cms) is set proportional to the stream raster value (Sx,y): Q = Flow_Alpha *  Sx,y
-    Exponential : bool, optional
-        Flag typically used for flow regression equations.  Flow (Q, cms) is calculated using an exponential function based on drainage area (DA): Q = Flow_Alpha * DA^Flow_Beta       Flow_Alpha and Flow_Beta are user-defined parameters.  DA is calculated based on the stream raster cell values and the unit conversion cards 
-    ExPrecip : bool, optional
-        Flag typically used for flow regression equations.  Flow (Q, cms) is calculated using an exponential function based on drainage area (DA) and precipitation: Q = Flow_Alpha * DA^Flow_Beta + Flow_Prec_Const^Flow_Prec_Exp   Flow_Alpha, Flow_Beta, Flow_Prec_Const, and Flow_Prec_Exp are all user-defined parameters.  DA is calculated based on the stream raster cell values and the unit conversion card
-    Log10 : bool, optional
-        Flag typically used for flow regression equations.  Flow (Q, cms) is calculated using a logarithmic function based on drainage area (DA): Q = 10 ^ ( Flow_Gamma + Flow_Alpha * DA^Flow_Beta )     Flow_Alpha, Flow_Beta, and Flow_Gamma are user-defined parameters.  DA is calculated based on the stream raster cell values and the unit conversion cards
-    FlowAlpha : int, float, optional
-        User-defined parameter often utilized in flow regression equations
-    FlowBeta : int, float, optional
-        User-defined parameter often utilized in flow regression equations
-    FlowGamma : int, float, optional
-        User-defined parameter often utilized in flow regression equations
-    PrecipConst : int, float, optional
-        User-defined parameter often utilized in flow regression equations
-    PrecipExp : int, float, optional
-        User-defined parameter often utilized in flow regression equations
-    SQFT : bool, optional
-        Multiplies each stream cell value within the Stream_File by 10763910.4, which converts the cell value from km2 to ft2. AutoRoute initially calculates Drainage Area as km2 based on STR_IS_M2 and the Stream_Cell values, which are assumed to be flow accumulation values. This input card is typically used when using flow regression equations.  All of the Unit Conversion cards can be used at the same time and build upon each other.
-    ACRE : bool, optional
-        Multiplies each stream cell value within the Stream_File by 247.1, which converts the cell value from km2 to acre. AutoRoute initially calculates Drainage Area as km2 based on STR_IS_M2 and the Stream_Cell values, which are assumed to be flow accumulation values. This input card is typically used when using flow regression equations.  All of the Unit Conversion cards can be used at the same time and build upon each other.
-    SQMI : bool, optional
-        Multiplies each stream cell value within the Stream_File by 0.38610216, which converts the cell value from km2 to square miles. AutoRoute initially calculates Drainage Area as km2 based on STR_IS_M2 and the Stream_Cell values, which are assumed to be flow accumulation values.
-    CMS : bool, optional
-        Multiplies each flow rate by 0.0283168, which converts the cell value from cubic feet per second to cubic meters per second. This is typically used when using flow regression equations.
-    M2 : NoneType, int, float, optional
-        Defines resolution (in meters, not square meters) of the cellsize for purposes of flow calculations.  If this is not defined, the default is to average the x- and y-cellsize resolution.
-    UseShortTW : bool, optional
-        Tells AutoRoute to output only the cross-section with the shortest top-width.  Only an option when using Degree_Manip and Degree_Interval where several cross-sections are sampled for each stream cell.
-    StrmMaskID : string, optional
-        Outputs a raster of the Stream Identifier number or Flow Rate for each stream cell.  Mainly used to check values.  Used in Conjunction with Print_Strm_Mask.
-    StrmMask : any, optional
-        Only used in conjunction with Print_Strm_Mask_ID.  Value indicates the following for the output raster: 1) Print Flow Values for each stream cell (does not currently work) and 2) Print identifier for each stream cell.  This identifier is set equal to row*ncols+col.  Basically, this is the number of cell if you read top-to-bottom, left-to-right.
-    BathyOut : string, optional
-        The full path to an output raster file of the AutoRoute-generated bathymetry.  All cells that were not included in cross-sections have a value of 0.  The main purpose of this file is as an input into FloodSpreader to create a more complete bathymetric map.
-    FloodPoints : string, optional
-        (path) Prints the X (e.g. Longitude) and Y (e.g. Latitude) coordinates of each ordinate in the cross-section to a comma-separated text file. This text file can then be input into ArcGIS.  The format is XYZ.  The waters-edge cells are always 3.  If Pnts_Just_3 is set within the input file than all the ordinates are set to 3, otherwise the ordinates at the waters-edge (ends of the cross-section) are set to a value of 2.
-    DepthPoints : string, optional
-        (path) Prints the Longitude, Latitude, and the flow depth of each ordinate in the cross-section to a comma-separated text file.
-    BathyPoints : string, optional
-        (path) Prints the Longitude, Latitude, and the bathymetry elevation of each ordinate in the cross-section to a comma-separated text file.
-    PointsJust3 : bool, optional
-        When outputting a flood-points text file using Print_Flood_Pnts, if Pnts_Just_3 is set within the input file than all the ordinates are set to 3, otherwise the ordinates at the waters-edge (ends of the cross-section) are set to a value of 2.
-    XSection : string, optional
-        (path) Prints the cross-section sampled at each stream cell in a two-line format.  The first line indicates the stream locations, stream identifications, flow, velocity, flow area, wetted perimeter, top-width, flow depth, cell elevation, slope, and coordinates of the ends of the cross-section.  The second line gives the ordinates of the cross-section.
-    Metafile : any, optional
-        A metafile is written for every AutoRoute run.  The information includes the AutoRoute version used, the location and size of the rasters being used, the inputs that were chosen, simulation time, etc.  If no filename is given, the program defaults to using the datetime the function was run.  This input card lets you specify the name of the Meta File.
-    DONTRUN : bool, optional
-        If set to True, the program will not run AutoRoute and instead only create the Input File. It is recommended to change the MIF paramter to a desired location
-    MIFN : string, optional
-        Location and name of temporary input file that AutoRoute will use, unless DONTRUN is True, in which case it will not be deleted.
-    Silent : bool, optional
-        If True, nothing will appear in the console when running AutoRoute. Setting to False may be useful if you want to see the live output and process of AutoRoute
-
-        .. versionadded:: 0.1.0
+    See the documentation
 
     Returns
     -------
@@ -780,163 +616,47 @@ def AutoRoute(EXE: str, DEM: str, stream: str, RAPID: str, LandUseSameRes: str, 
     ...
 
     """
-    # Because we don't yet have access to AutoRoute source code, we must write a temporary text file, use it is an input to autoroute, and then delete it, unless the user wishes to keep it.
-    # Check the validity of each input
-    _checkExistence([DEM, stream, RAPID, LandUseSameRes, Mannings])
+    with open(input_yml, 'r') as config_file:
+        config = yaml.safe_load(config_file)
+    inputs = list(config.keys())
+    MIFN = None
+    for key in inputs:
+        if key == 'Main_Input_File':
+            MIFN = config[key]
 
-    if Spatial_Units != 'deg' and Spatial_Units != 'km' and Spatial_Units != 'm':
-        raise ValueError('Spatial units must be either "deg", "km", or "m"')
+    if MIFN is None:
+        print(f"No main input file described for AutoRoute, saving as 'mifn.txt' in {os.getcwd()}...")
+        MIFN = 'mifn.txt'
 
-    for intorfloat in [X_distance, Q, Degree_interval, Weight_angles,Stream_lower_limit, Stream_upper_limit, LowSpotRangeM, AdjustFlow, FlowAlpha, FlowBeta, FlowGamma, PrecipConst, PrecipExp]:
-        if not isinstance(intorfloat, int) and not isinstance(intorfloat, float):
-            raise ValueError(f'The value {intorfloat} is invalid. Please reenter the value as an integer or float.')
-
-    for isint in [Prev_D, Dir_dist, Slope_dist, Dist_past_WE, LowSpotRange, LowSpotBoxSize, DatabaseIts, StartRow]:
-        if not isinstance(isint, int):
-            raise ValueError(f'The value {isint} is invalid. Please reenter the value as an integer.')
-
-    for isfloat in[Degree_manip, FindFlatCutoff]:
-        if not isinstance(isfloat, float):
-            raise ValueError(f'The value {isfloat} is invalid. Please reenter the value as a float.')
-            
-    for isbool in [LandUseDiffRes, LowSpotBox, LowSpotFindFlat, Database, SubtractBaseflow, RowColFromRAPID, Bathy, Uniform, Proportional, Exponential, ExPrecip, Log10, SQFT, ACRE, SQMI, CMS, UseShortTW, PointsJust3, DONTRUN]:
-        if not isinstance(isbool, bool):
-            raise ValueError(f'The value {isbool} is invalid. Please reenter the value as a boolean.')
-
-    for issmall in [X_distance, Dir_dist, Slope_dist]:
-        if issmall <= 0:
-            raise ValueError(f'A value passed was {issmall}, but it should be greater than zero')
-
-    if Prev_D != 0 and Prev_D!= 1:
-        raise ValueError(f"Prev_D must be either 0 or 1, not {Prev_D}")
+    write_immediately = ['DEM_File', 'Stream_File','LU_Raster','LU_Raster_SameRes','LU_Manning_n','Flow_RAPIDFile',
+                         'RowCol_From_RAPIDFile','RAPID_Subtract_BaseFlow','RAPID_Flow_ID','RAPID_Flow_Param',
+                         'RAPID_BaseFlow_Param','RAPID_Flow_ID','Spatial_Units','Print_VDT_Database','Print_VDT_Database_NumIterations',
+                         'Print_VDT','Meta_File','X_Section_Dist','Degree_Manip','Degree_Interval','Low_Spot_Range','Q_Limit',
+                         'Gen_Dir_Dist','Gen_Slope_Dist','Bathymetry','RAPID_BaseFlow_Param','Bathymetry_Method',
+                         'Bathymetry_XMaxDepth','Bathymetry_YShallow','Bathymetry_SideSlope','Bathymetry_Alpha','BATHY_Out_File',
+                         'RAPID_DA_or_Flow_Param','Use_Prev_D_4_XS','Man_n','Weight_Angles','Dist_X_PastWE','Str_Limit_Val',
+                         'UP_Str_Limit_Val','Low_Spot_Dist_m','Low_Spot_Range_Box','Low_Spot_Range_Box_Size','Low_Spot_Find_Flat',
+                         'Low_Spot_Range_FlowCutoff','Layer_Row_Start','Layer_Row_End','ADJUST_FLOW_BY_FRACTION','UNIFORM_FLOW',
+                         'PROPORTIONAL_FLOW','Flow_Alpha','EXPONENTIAL_FLOW','Flow_Beta','EXPON_PRECIP_FLOW','Flow_Prec_Const',
+                         'Flow_Prec_Exp','Flow_Gamma','CONVERT_DA_TO_SQFT','CONVERT_DA_TO_ACRE','CONVERT_DA_TO_SQMI',
+                         'CONVERT_Q_CFS_TO_CMS','STR_IS_M2','Print_Rasters_With_ShortTW','Print_Strm_Mask_ID','Print_Strm_Mask',
+                         'Print_Flood_Pnts','Pnts_Just_3','Print_Depth_Pnts','Print_Bathy_Pnts','Print_XSections','XSections_FileName']
 
     with open(MIFN,'w') as MIF:
-        # Required inputs and outputs
-        _AR_Write(MIF, 'DEM_File', DEM)
-        _AR_Write(MIF, 'Stream_File', stream)
-        if LandUseDiffRes == True:
-            _AR_Write(MIF, 'LU_Raster', LandUseSameRes)
-        else:
-            _AR_Write(MIF, 'LU_Raster_SameRes', LandUseSameRes)
-        _AR_Write(MIF, 'LU_Manning_n', Mannings)
-        _AR_Write(MIF, 'Flow_RAPIDFile', RAPID)
-        if RowColFromRAPID:
-            _AR_Write(MIF, 'RowCol_From_RAPIDFile', '')
-        _AR_Write(MIF, 'RAPID_Flow_ID', RAPIDid)
-        _AR_Write(MIF, 'RAPID_Flow_Param', RAPIDflow)
-        if SubtractBaseflow and RAPIDbaseflow!= '':
-            _AR_Write(MIF, 'RAPID_Subtract_BaseFlow', '')
-            _AR_Write(MIF, 'RAPID_BaseFlow_Param', RAPIDbaseflow)
-            _AR_Write(MIF, 'RAPID_Flow_ID', RAPIDid)
-        _AR_Write(MIF, 'Spatial_Units', Spatial_Units)
-        if Database:
-            _AR_Write(MIF, 'Print_VDT_Database', out_path)
-            _AR_Write(MIF, 'Print_VDT_Database_NumIterations', DatabaseIts)
-        else: 
-            _AR_Write(MIF, 'Print_VDT', out_path)
-        _AR_Write(MIF, 'Meta_File', Metafile)
+        for key in inputs:
+            value = config[key]
+            if value is None or value is False:
+                continue
+            if key in write_immediately:
+                if value is True:
+                    _AR_Write(MIF, key, '')
+                else:
+                    _AR_Write(MIF, key, value)
 
-        # Optional inputs
-        _AR_Write(MIF, 'X_Section_Dist', X_distance)
-        _AR_Write(MIF, 'Degree_Manip', Degree_manip)
-        _AR_Write(MIF, 'Degree_Interval', Degree_interval)
-        _AR_Write(MIF, 'Low_Spot_Range', LowSpotRange)
-        _AR_Write(MIF, 'Q_Limit', Q)
-        _AR_Write(MIF, 'Gen_Dir_Dist', Dir_dist)
-        _AR_Write(MIF, 'Gen_Slope_Dist', Slope_dist)
-        if Bathy:
-            _AR_Write(MIF, "Bathymetry", "")
-            _AR_Write(MIF, 'RAPID_BaseFlow_Param', RAPIDbaseflow)
-            _AR_Write(MIF, "Bathymetry_Method", Bathy_mthd)
-            _AR_Write(MIF, "Bathymetry_XMaxDepth", Bathy_max_depth)
-            _AR_Write(MIF, "Bathymetry_YShallow", Bathy_y_Shallow)
-            _AR_Write(MIF, "Bathymetry_SideSlope", Bathy_side_slope)
-            if BathyAlpha is not None:
-                _AR_Write(MIF, "Bathymetry_Alpha",BathyAlpha)
-            if BathyOut:
-                _AR_Write(MIF, "BATHY_Out_File", BathyOut)
-            if Rapid_da_flow:
-                _AR_Write(MIF, "RAPID_DA_or_Flow_Param", Rapid_da_flow)
-
-        if Prev_D == 0:
-            _AR_Write(MIF, 'Use_Prev_D_4_XS', 0)
-        if Man_n != None:
-            _AR_Write(MIF, 'Man_n', Man_n)
-        _AR_Write(MIF, 'Weight_Angles', Weight_angles)
-        if Dist_past_WE != 0:
-            _AR_Write(MIF, 'Dist_X_PastWE', Dist_past_WE)
-        if Stream_lower_limit != 0:
-            _AR_Write(MIF, 'Str_Limit_Val', Stream_lower_limit)
-        if Stream_upper_limit < 1000000000000000:
-            _AR_Write(MIF, 'UP_Str_Limit_Val', Stream_upper_limit)
-        if LowSpotRangeM!= 0:
-            _AR_Write(MIF, 'Low_Spot_Dist_m', LowSpotRangeM)
-        if LowSpotBox:
-            _AR_Write(MIF, 'Low_Spot_Range_Box', '')
-            _AR_Write(MIF, 'Low_Spot_Range_Box_Size', LowSpotBoxSize)
-        if LowSpotFindFlat:
-            _AR_Write(MIF, 'Low_Spot_Find_Flat', '')
-            _AR_Write(MIF, 'Low_Spot_Range_FlowCutoff', FindFlatCutoff)
-        if StartRow:
-            _AR_Write(MIF, 'Layer_Row_Start',StartRow)
-        if EndRow:
-            _AR_Write(MIF, 'Layer_Row_End', EndRow)
-        if AdjustFlow != 1:
-            _AR_Write(MIF, 'ADJUST_FLOW_BY_FRACTION', AdjustFlow)
-        if Uniform:
-            _AR_Write(MIF, 'UNIFORM_FLOW', '')
-            _AR_Write(MIF, 'Flow_Alpha', FlowAlpha)
-        if Proportional:
-            _AR_Write(MIF, 'PROPORTIONAL_FLOW', '')
-            _AR_Write(MIF, 'Flow_Alpha', FlowAlpha)
-        if Exponential:
-            _AR_Write(MIF, 'EXPONENTIAL_FLOW', '')
-            _AR_Write(MIF, 'Flow_Alpha', FlowAlpha)
-            _AR_Write(MIF, 'Flow_Beta', FlowBeta)
-        if ExPrecip:
-            _AR_Write(MIF, 'EXPON_PRECIP_FLOW', '')
-            _AR_Write(MIF, 'Flow_Alpha', FlowAlpha)
-            _AR_Write(MIF, 'Flow_Beta', FlowBeta)
-            _AR_Write(MIF, 'Flow_Prec_Const', PrecipConst)
-            _AR_Write(MIF, 'Flow_Prec_Exp', PrecipExp)
-        if Log10:
-            _AR_Write(MIF, 'Flow_Alpha', FlowAlpha)
-            _AR_Write(MIF, 'Flow_Gamma', FlowGamma)
-            _AR_Write(MIF, 'Flow_Beta', FlowBeta)
-        if SQFT:
-            _AR_Write(MIF, 'CONVERT_DA_TO_SQFT', '')
-        if ACRE:
-            _AR_Write(MIF, 'CONVERT_DA_TO_ACRE', '')
-        if SQMI:
-            _AR_Write(MIF, 'CONVERT_DA_TO_SQMI', '')
-        if CMS:
-            _AR_Write(MIF, 'CONVERT_Q_CFS_TO_CMS', '')
-        if M2:
-            _AR_Write(MIF, 'STR_IS_M2', M2)
-
-        # Optional outputs
-        if UseShortTW:
-            _AR_Write(MIF, 'Print_Rasters_With_ShortTW', UseShortTW)
-        if StrmMaskID:
-            _AR_Write(MIF, 'Print_Strm_Mask_ID', StrmMaskID)
-            _AR_Write(MIF, 'Print_Strm_Mask', StrmMask)
-        if FloodPoints:
-            _AR_Write(MIF, 'Print_Flood_Pnts', FloodPoints)
-            if PointsJust3:
-                _AR_Write(MIF, 'Pnts_Just_3', '')
-        if DepthPoints:
-            _AR_Write(MIF, 'Print_Depth_Pnts', DepthPoints)
-        if BathyPoints:
-            _AR_Write(MIF, 'Print_Bathy_Pnts', BathyPoints)
-        if XSection:
-            _AR_Write(MIF, 'Print_XSections', '')
-            _AR_Write(MIF, 'XSections_FileName', XSection)
-
-    if not DONTRUN:
-        if Silent:
-            c = subprocess.call([EXE, MIFN], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
-        else:
-            c = subprocess.call([EXE, MIFN])
+    if 'AutoRouteExe' in inputs:
+        return [config['AutoRouteExe'], MIFN]
+    
+    return [MIFN]
 
 def _AR_Write(MIF, Card, Argument) -> None:
     MIF.write(f"{Card}\t{Argument}\n")
@@ -1052,6 +772,7 @@ def FloodSpreader(EXE: str, DEM: str, VDT: str, OutName: str, Database: bool = T
         mode = 'a'
     else:
         mode = 'w'
+    mode= 'w'
 
     with open(MIFN, mode) as MIF:
         # Required inputs
@@ -1271,17 +992,17 @@ def FloodSpreaderPy(DEMfile, VDT, OutName, Database=True, COMIDFile='', AdjustFl
         
 
     # Open temp VDT
-    _checkExistence([VDT])
+    _checkExistence([MIFN])
     
     #Go through VDT file and create a list of V, D, and T data for each COMID
-    num_lines, numPoints, MinC, MaxC = _VDT_Get_Num_Min_Max_COMIDs(VDT)
+    num_lines, numPoints, MinC, MaxC = _VDT_Get_Num_Min_Max_COMIDs(MIFN)
     if numPoints < 1:
         raise("There are no points in the VDT file, Not Running this Analysis")
     if not Silent:print(f"Min COMID: {MinC}")
     if not Silent:print(f"Max COMID: {MaxC}")
     ID = np.zeros((numPoints+1,))
     T_Max = 0
-    with open(VDT, 'r') as VDT_FILE:
+    with open(MIFN, 'r') as VDT_FILE:
         line = VDT_FILE.readline()
         numCOMIDs = 0
         for line in VDT_FILE:
@@ -1307,7 +1028,7 @@ def FloodSpreaderPy(DEMfile, VDT, OutName, Database=True, COMIDFile='', AdjustFl
     
     # Calculate the average V, D, and T for each COMID
     num = 0
-    with open(VDT, 'r') as VDT_FILE:
+    with open(MIFN, 'r') as VDT_FILE:
         line = VDT_FILE.readline()
         for line in VDT_FILE:
             line = line.strip().split(",")
@@ -1348,7 +1069,7 @@ def FloodSpreaderPy(DEMfile, VDT, OutName, Database=True, COMIDFile='', AdjustFl
             Wlist[i] /= n[i]
             
     # Calculate the StDev 
-    with open(VDT, 'r') as VDT_FILE:
+    with open(MIFN, 'r') as VDT_FILE:
         line = VDT_FILE.readline()
         for line in VDT_FILE:
                 line = line.strip().split(",")
@@ -1457,7 +1178,7 @@ def FloodSpreaderPy(DEMfile, VDT, OutName, Database=True, COMIDFile='', AdjustFl
 
 
     # Go Through And Start Flooding
-    with open(VDT, 'r') as VDT_FILE:
+    with open(MIFN, 'r') as VDT_FILE:
         line = VDT_FILE.readline()
         for progress, line in enumerate(VDT_FILE):
             line = line.strip().split(",")
@@ -1633,11 +1354,13 @@ def FloodSpreaderPy(DEMfile, VDT, OutName, Database=True, COMIDFile='', AdjustFl
     if OutVEL:
         U_V = np.divide(U_V,L, out=np.zeros_like(U_V), where=L!=0)
 
+    
+
     # Delete some memory
     if not Silent:print("\n\n\nDeleteing V, D, and n memory")
-    Dlist = np.array([])
-    n = np.array([])
-    Vlist = np.array([])
+    del Dlist
+    del n
+    del Vlist
 
     # Here is a section for taking out flooding behind levees, but again this doesn't seem toi be a current option. Leaving as is
 
@@ -1997,7 +1720,7 @@ def _Create_VDT_File_Based_On_Database(VDT_FILE: str, VDT_DATABASE_FILE: str, ID
 
 def StreamLine_Parser(dem: str, root_folder: str, extents: str, output_strm: str, field: str = 'TDXHydroLi'):
     # Load the DEM extent
-    minx, miny, maxx, maxy, _, _, ncols, nrows, geoTransform, _ = _Get_Raster_Details(dem)
+    minx, miny, maxx, maxy, _, _, ncols, nrows, geoTransform, projection = _Get_Raster_Details(dem)
 
     extents_df = pd.read_parquet(extents)
     filtered_gdf = extents_df[
@@ -2008,9 +1731,7 @@ def StreamLine_Parser(dem: str, root_folder: str, extents: str, output_strm: str
     ]
 
     vpus = filtered_gdf.VPUCode.unique()
-    if vpus.shape[0] == 0:
-        raise ValueError(f"No streams found in the extent of the DEM!!!")
-    
+    resulting_dfs = []
     counter = 0
     for folder in os.listdir(root_folder):
             folder_path = os.path.join(root_folder, folder)
@@ -2019,20 +1740,21 @@ def StreamLine_Parser(dem: str, root_folder: str, extents: str, output_strm: str
 
             for file in os.listdir(folder_path):
                 if file.endswith('.parquet') and int(file[4:7]) in vpus:
-                    vpu_df = gpd.read_parquet(os.path.join(folder_path, file))
-                    filtered_gdf = filtered_gdf.merge(vpu_df[['TDXHydroLinkNo', 'geometry']], on='TDXHydroLinkNo', how='left')
+                    resulting_dfs.append(
+                        filtered_gdf.merge(gpd.read_parquet(os.path.join(folder_path, file))[['TDXHydroLinkNo', 'DSContArea', 'geometry']], 
+                                           on='TDXHydroLinkNo', 
+                                           how='inner'
+                                           )
+                        )
                     counter += 1
 
-    geometry_columns = [col for col in filtered_gdf.columns if col.startswith('geometry_')]
-        
-    if counter > 1:
-        filtered_gdf['geometry'] = filtered_gdf[geometry_columns].apply(_merge_geometries, axis=1)
-
-    # Drop the individual geometry columns
-    gpd.GeoDataFrame(filtered_gdf.drop(columns=geometry_columns)[['TDXHydroLinkNo', 'geometry']], crs='EPSG:4326').to_file('temp.shp')
+    # # Drop the individual geometry columns
+    (gpd.GeoDataFrame(pd.concat(resulting_dfs)[['TDXHydroLinkNo', 'geometry', 'DSContArea']])
+        .to_crs('EPSG:4326')
+        .to_file('temp.gpkg', driver='GPKG'))
 
     # Open the data source and read in the extent
-    source_ds = ogr.Open('temp.shp')
+    source_ds = ogr.Open('temp.gpkg')
     if source_ds is None:
         raise Exception("Failed to open the source data source.")
  
@@ -2041,17 +1763,19 @@ def StreamLine_Parser(dem: str, root_folder: str, extents: str, output_strm: str
     # Create the destination data source
     target_ds = gdal.GetDriverByName('GTiff').Create(output_strm, ncols, nrows, 1, gdal.GDT_UInt32)
     target_ds.SetGeoTransform(geoTransform)
+    target_ds.SetProjection(projection)
     band = target_ds.GetRasterBand(1)
     band.SetNoDataValue(0)
 
     # Rasterize
     gdal.RasterizeLayer(target_ds, [1], source_layer, options=["ATTRIBUTE=" + field])
-    os.remove('temp.shp')
 
-
-def _merge_geometries(row):
-    geometries = row.dropna().values
-    if len(geometries) > 1:
-        return MultiLineString(geometries)
-    else:
-        return geometries[0]
+def ReturnPeriod(flow_data: list or np.ndarray, return_period: float or int):
+    """
+    Assuming streamflow data fits a right-skewed Gumbel distribution.
+    """
+    fitted_params = stats.gumbel_r.fit(flow_data)
+    if return_period == 1:
+        return stats.gumbel_r.ppf(1 - 1/1e-15, *fitted_params)
+    
+    return stats.gumbel_r.ppf(1 - 1/return_period, *fitted_params) 
