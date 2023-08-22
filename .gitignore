@@ -2,5 +2,7 @@
 *.txt
 *.vscode
 test.py
-test.tif
-*.xml
+temp*
+download.py
+extent.gpkg
+geopanas.py
