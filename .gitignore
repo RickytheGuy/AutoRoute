@@ -2,3 +2,7 @@
 *.txt
 *.vscode
 test.py
+temp*
+download.py
+extent.gpkg
+geopanas.py
