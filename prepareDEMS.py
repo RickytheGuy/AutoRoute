@@ -56,18 +56,22 @@ for vpu_parquet, gpkg in zip(vpu_folder_list, gpkg_vpu_folder_list):
         os.makedirs(vpu_folder, exist_ok=True)
         logging.info(f'Working on {vpu_number}')
 
-        dem = os.path.join(vpu_folder, f'dem_{vpu_number}.tif')
-        if not os.path.exists(dem):
-            extent = gpd.read_parquet(vpu_parquet).total_bounds
-            DEM_Parser(DEMs_World, dem, extent=extent)
+        # dem = os.path.join(vpu_folder, f'dem_{vpu_number}.tif')
+        # if not os.path.exists(dem):
+        #     extent = gpd.read_parquet(vpu_parquet).total_bounds
+        #     DEM_Parser(DEMs_World, dem, extent=extent)
 
-        lu = os.path.join(vpu_folder, f'lu_{vpu_number}.tif')
-        if not os.path.exists(lu) and os.path.exists(dem):
-            LU_Parser(LandCover_World, dem, lu, mannings_dict)
+        # lu = os.path.join(vpu_folder, f'lu_{vpu_number}.tif')
+        # if not os.path.exists(lu) and os.path.exists(dem):
+        #     LU_Parser(LandCover_World, dem, lu, mannings_dict)
 
         strm = os.path.join(vpu_folder, f'strm_{vpu_number}.tif')
-        if not os.path.exists(strm) and os.path.exists(dem):
-            PrepareStream(dem, gpkg, strm, field='TDXHydroLinkNo')
+        # if not os.path.exists(strm) and os.path.exists(dem):
+        #     PrepareStream(dem, gpkg, strm, field='TDXHydroLinkNo')
+
+        rapid = os.path.join(vpu_folder, f'rapid_{vpu_number}.txt')
+        if not os.path.exists(rapid) and os.path.exists(strm):
+            MakeRAPIDFile("the csv", strm, rapid, field='TDHydroLinkNo')
 
         logging.info(f"Finished {vpu_number}")
     except Exception as e:
